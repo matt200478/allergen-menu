@@ -4,6 +4,7 @@ import { Routes, Route, Link, Navigate } from 'react-router-dom';
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
+  sendPasswordResetEmail,
   signOut,
 } from 'firebase/auth';
 import {
@@ -79,11 +80,14 @@ function ManagerLogin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [resetMessage, setResetMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
 
   const handleLogin = async (e) => {
     e.preventDefault();
     setError('');
+    setResetMessage('');
     setLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email.trim(), password);
@@ -91,6 +95,32 @@ function ManagerLogin() {
       setError('Invalid manager email or password. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    setError('');
+    setResetMessage('');
+
+    if (!email.trim()) {
+      setError('Please enter your manager email address above first, then click "Forgot password?".');
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      await sendPasswordResetEmail(auth, email.trim());
+      setResetMessage(
+        `Password reset link sent to ${email.trim()}. Please check your inbox (and junk folder).`
+      );
+    } catch (err) {
+      if (err.code === 'auth/invalid-email') {
+        setError('Please enter a valid email address.');
+      } else {
+        setError('Unable to send reset email. Please verify the email address is registered.');
+      }
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -115,6 +145,12 @@ function ManagerLogin() {
           </div>
         )}
 
+        {resetMessage && (
+          <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-800">
+            {resetMessage}
+          </div>
+        )}
+
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
             <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
@@ -131,9 +167,19 @@ function ManagerLogin() {
           </div>
 
           <div>
-            <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
-              Password
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-bold uppercase text-slate-600">
+                Password
+              </label>
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                disabled={resetLoading}
+                className="text-xs font-bold text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+              >
+                {resetLoading ? 'Sending link...' : 'Forgot password?'}
+              </button>
+            </div>
             <input
               type="password"
               required
@@ -146,8 +192,8 @@ function ManagerLogin() {
 
           <button
             type="submit"
-            disabled={loading}
-            className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-md transition"
+            disabled={loading || resetLoading}
+            className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white font-bold text-sm shadow-md transition"
           >
             {loading ? 'Signing In...' : 'Sign In to Dashboard'}
           </button>
