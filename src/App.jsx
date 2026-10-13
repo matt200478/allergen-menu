@@ -596,4 +596,244 @@ function QrCodeModal({ onClose }) {
                 )}
 
                 <h3
-                  className={`font-black text-slate-90
+                  className={`font-black text-slate-900 leading-tight ${
+                    layoutMode === 'SINGLE'
+                      ? 'text-2xl'
+                      : layoutMode === 'GRID_4'
+                      ? 'text-lg'
+                      : 'text-sm'
+                  }`}
+                >
+                  {headline}
+                </h3>
+
+                <div className="p-2 bg-white border-2 border-slate-200 rounded-xl inline-block">
+                  <img
+                    src={qrImageUrl}
+                    alt="Customer Allergen Kiosk QR Code"
+                    className={
+                      layoutMode === 'SINGLE'
+                        ? 'w-56 h-56'
+                        : layoutMode === 'GRID_4'
+                        ? 'w-36 h-36'
+                        : 'w-24 h-24'
+                    }
+                  />
+                </div>
+
+                <p
+                  className={`text-slate-700 font-semibold max-w-xs ${
+                    layoutMode === 'GRID_9' ? 'text-[10px]' : 'text-xs'
+                  }`}
+                >
+                  {subtext}
+                </p>
+
+                <div className="text-[10px] font-mono text-slate-400 truncate max-w-full">
+                  {kioskUrl.replace(/^https?:\/\//, '')}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * FEATURE 4: A4 PRINTABLE ALLERGEN MATRIX & DISH DIRECTORY
+ * ========================================================================== */
+function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
+  return (
+    <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 no-print">
+        <div>
+          <h1 className="text-2xl font-extrabold text-slate-900">
+            Printable A4 Allergen Matrix &amp; Active Menu
+          </h1>
+          <p className="text-sm text-slate-600">
+            Standard 14-allergen grid formatted for A4 landscape printing. Click any dish to edit its recipe.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onCreateNewDish}
+            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-xs font-bold text-slate-800"
+          >
+            <PlusCircle className="w-4 h-4 text-indigo-600" />
+            New Dish
+          </button>
+
+          <button
+            type="button"
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm"
+          >
+            <Printer className="w-4 h-4" />
+            Print A4 Allergen Matrix
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 overflow-x-auto">
+        <div className="mb-4 flex items-center justify-between border-b border-slate-200 pb-3">
+          <div>
+            <h2 className="text-lg font-black uppercase tracking-tight text-slate-900">
+              Official Food &amp; Beverage Allergen Matrix (14 Major Allergens)
+            </h2>
+            <p className="text-xs text-slate-500">
+              Generated: {new Date().toLocaleDateString('en-GB')} • Key: YES = Contains Allergen | MAY = May Contain Traces | - = Not Present
+            </p>
+          </div>
+        </div>
+
+        {dishes.length === 0 ? (
+          <div className="py-12 text-center text-sm text-slate-500">
+            No dishes created yet. Use the Dish Builder tab to create your first menu item.
+          </div>
+        ) : (
+          <table className="w-full border-collapse text-left text-[11px]">
+            <thead>
+              <tr className="bg-slate-900 text-white">
+                <th className="p-2 border border-slate-700 font-bold">Menu Item</th>
+                <th className="p-2 border border-slate-700 font-bold text-center">kcal</th>
+                {UK_ALLERGENS.map((a) => (
+                  <th
+                    key={a.key}
+                    className="p-1.5 border border-slate-700 font-bold text-center"
+                  >
+                    {a.label}
+                  </th>
+                ))}
+                <th className="p-2 border border-slate-700 text-center no-print">
+                  Edit
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {dishes.map((dish) => {
+                const activeCereals = GLUTEN_CEREALS.filter(
+                  (c) =>
+                    dish.allergens?.[c.key] === 'Yes' ||
+                    dish.allergens?.[c.key] === 'May Contain'
+                ).map((c) => c.label);
+
+                return (
+                  <tr
+                    key={dish.id}
+                    className="border-b border-slate-200 hover:bg-slate-50"
+                  >
+                    <td className="p-2 border border-slate-300 font-bold text-slate-900">
+                      <div className="flex items-center gap-1.5">
+                        <span>{dish.name}</span>
+                        {dish.hasOutOfStockIngredient && (
+                          <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black uppercase no-print">
+                            OOS
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] font-normal text-slate-500">
+                        {dish.category} • £{Number(dish.retailPrice).toFixed(2)}
+                      </div>
+                    </td>
+
+                    <td className="p-2 border border-slate-300 text-center font-semibold">
+                      {dish.totalCalories || 0}
+                    </td>
+
+                    {UK_ALLERGENS.map((a) => {
+                      const status = dish.allergens?.[a.key] || 'No';
+                      return (
+                        <td
+                          key={a.key}
+                          className={`p-1.5 border border-slate-300 text-center font-bold ${
+                            status === 'Yes'
+                              ? 'bg-red-600 text-white'
+                              : status === 'May Contain'
+                              ? 'bg-amber-300 text-slate-950'
+                              : 'text-slate-300'
+                          }`}
+                        >
+                          <div>
+                            {status === 'Yes'
+                              ? 'YES'
+                              : status === 'May Contain'
+                              ? 'MAY'
+                              : '-'}
+                          </div>
+                          {a.key === 'gluten' && activeCereals.length > 0 && (
+                            <div className="text-[9px] font-normal leading-tight mt-0.5">
+                              ({activeCereals.join(', ')})
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
+
+                    <td className="p-2 border border-slate-300 text-center no-print">
+                      <button
+                        type="button"
+                        onClick={() => onEditDish(dish)}
+                        className="p-1.5 rounded-lg text-indigo-600 hover:bg-indigo-50"
+                        title="Edit Dish"
+                      >
+                        <Edit3 className="w-4 h-4 mx-auto" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
+ * AUDIT LOG VIEWER
+ * ========================================================================== */
+function AuditLogViewer({ logs }) {
+  return (
+    <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-4">
+      <div>
+        <h1 className="text-2xl font-extrabold text-slate-900">
+          System Audit Trail
+        </h1>
+        <p className="text-sm text-slate-600">
+          Immutable log of all ingredient allergen updates, stock changes, and recipe edits.
+        </p>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 divide-y divide-slate-200">
+        {logs.length === 0 ? (
+          <div className="p-8 text-center text-sm text-slate-500">
+            No audit events recorded yet.
+          </div>
+        ) : (
+          logs.map((log) => {
+            const dateStr = log.timestamp?.toDate
+              ? log.timestamp.toDate().toLocaleString('en-GB')
+              : 'Just now';
+
+            return (
+              <div
+                key={log.id}
+                className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm"
+              >
+                <div className="font-semibold text-slate-800">{log.action}</div>
+                <div className="text-xs text-slate-500 font-mono shrink-0">
+                  {dateStr} • UID: {log.userId?.slice(0, 8)}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
