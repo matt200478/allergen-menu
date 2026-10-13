@@ -1,5 +1,5 @@
 // src/components/manager/DishBuilder.jsx
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   collection,
   onSnapshot,
@@ -21,6 +21,10 @@ import {
   PoundSterling,
   Copy,
   Check,
+  Upload,
+  Image as ImageIcon,
+  Link as LinkIcon,
+  X,
 } from 'lucide-react';
 
 // UK 14 Major Allergens Configuration
@@ -89,6 +93,46 @@ export const formatPPDSString = (rawText) => {
   return { html, plainText };
 };
 
+/**
+ * Client-side HTML5 Canvas image resizer & compressor.
+ * Turns a 5MB+ phone/camera photo into a ~45KB optimised JPEG Data URL.
+ */
+const compressImageFile = (file, maxWidth = 800, maxHeight = 600, quality = 0.78) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new window.Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxWidth || height > maxHeight) {
+          const ratio = Math.min(maxWidth / width, maxHeight / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        // Fill white background for transparent PNGs converted to JPEG
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve(compressedDataUrl);
+      };
+      img.onerror = () => reject(new Error('Could not decode image file.'));
+    };
+    reader.onerror = () => reject(new Error('Failed to read image file.'));
+  });
+};
+
 const CATEGORIES = [
   'Burgers & Hot Dogs',
   'Sharing Platters & Bowling Bites',
@@ -108,6 +152,8 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   const [dishName, setDishName] = useState(existingDish?.name || '');
   const [category, setCategory] = useState(existingDish?.category || CATEGORIES[0]);
   const [photoUrl, setPhotoUrl] = useState(existingDish?.photoUrl || '');
+  const [photoMode, setPhotoMode] = useState('UPLOAD'); // 'UPLOAD' | 'URL'
+  const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
   const [retailPrice, setRetailPrice] = useState(existingDish?.retailPrice || '');
   const [isActive, setIsActive] = useState(existingDish?.isActive ?? true);
   const [components, setComponents] = useState(
@@ -115,10 +161,12 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   );
 
   // UI & Accounting Helpers
-  const [includeVatInGp, setIncludeVatInGp] = useState(false); // False = pure Gross Retail Price; True = deduct 20% UK VAT
+  const [includeVatInGp, setIncludeVatInGp] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null);
   const [copiedPpds, setCopiedPpds] = useState(false);
+
+  const photoInputRef = useRef(null);
 
   // 1. Real-time Subscription to Ingredients Collection
   useEffect(() => {
@@ -129,7 +177,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
           id: docSnap.id,
           ...docSnap.data(),
         }));
-        // Sort alphabetically for quick manager selection
         fetched.sort((a, b) => a.productName.localeCompare(b.productName));
         setIngredients(fetched);
         setLoadingIngredients(false);
@@ -151,6 +198,38 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     });
     return map;
   }, [ingredients]);
+
+  // Handle Photo File Selection & Compression
+  const handlePhotoFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setStatusMessage({
+        type: 'error',
+        text: 'Please select a valid image file (JPG, PNG, or WebP).',
+      });
+      return;
+    }
+
+    setIsProcessingPhoto(true);
+    setStatusMessage(null);
+    try {
+      const compressedDataUrl = await compressImageFile(file);
+      setPhotoUrl(compressedDataUrl);
+    } catch (err) {
+      console.error('Photo compression error:', err);
+      setStatusMessage({
+        type: 'error',
+        text: 'Could not process that photo. Please try another image.',
+      });
+    } finally {
+      setIsProcessingPhoto(false);
+      if (photoInputRef.current) {
+        photoInputRef.current.value = '';
+      }
+    }
+  };
 
   // Component Row Handlers
   const handleAddComponent = () => {
@@ -181,7 +260,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     let totalWeightGrams = 0;
     const outOfStockItems = [];
 
-    // Initialise all 14 allergens + 4 gluten sub-cereals to "No"
     const aggregatedAllergens = {};
     UK_ALLERGENS.forEach((a) => {
       aggregatedAllergens[a.key] = 'No';
@@ -190,7 +268,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       aggregatedAllergens[c.key] = 'No';
     });
 
-    // Helper: Escalate allergen status ("No" -> "May Contain" -> "Yes")
     const mergeAllergenState = (currentVal, incomingVal) => {
       if (currentVal === 'Yes' || incomingVal === 'Yes') return 'Yes';
       if (currentVal === 'May Contain' || incomingVal === 'May Contain') return 'May Contain';
@@ -233,7 +310,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       GLUTEN_CEREALS.forEach(({ key }) => {
         const val = ingAllergens[key] || ingAllergens.cereals?.[key] || 'No';
         aggregatedAllergens[key] = mergeAllergenState(aggregatedAllergens[key], val);
-        // Automatically ensure parent 'gluten' reflects any positive cereal trace
         if (val === 'Yes' || val === 'May Contain') {
           aggregatedAllergens.gluten = mergeAllergenState(aggregatedAllergens.gluten, val);
         }
@@ -248,7 +324,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       effectiveRevenue > 0 ? ((effectiveRevenue - totalCost) / effectiveRevenue) * 100 : 0;
 
     // Natasha's Law (PPDS) Composite String Generation
-    // Sort components by weight descending (UK Quantitative Ingredient Declaration order)
     const sortedForPpds = [...validComponents].sort((a, b) => b.weight - a.weight);
     const rawCompositeIngredients = sortedForPpds
       .map(({ ing }) => `${ing.productName} (${ing.ingredientList || ing.productName})`)
@@ -303,8 +378,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
         ? doc(db, 'dishes', existingDish.id)
         : doc(collection(db, 'dishes'));
 
-      // Note: totalCost and gpPercentage are deliberately excluded from the public
-      // dish document to enforce commercial privacy on the Customer Kiosk.
       const dishPayload = {
         name: dishName.trim(),
         category,
@@ -314,7 +387,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
           ingredientId: c.ingredientId,
           weightGrams: Number(c.weightGrams),
         })),
-        // Denormalised safe fields for fast Kiosk rendering & Printable Matrix
         totalCalories: metrics.totalCalories,
         allergens: metrics.aggregatedAllergens,
         ppdsIngredientText: metrics.ppdsFormatted.plainText,
@@ -325,7 +397,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
 
       batch.set(dishRef, dishPayload, { merge: true });
 
-      // Append immutable entry to audit_logs
       const auditRef = doc(collection(db, 'audit_logs'));
       batch.set(auditRef, {
         timestamp: serverTimestamp(),
@@ -366,7 +437,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     return 'bg-slate-100 text-slate-400 border-slate-200';
   };
 
-  // Helper colour coding for GP% margin targets (UK Hospitality benchmark: 70%+ target)
+  // Helper colour coding for GP% margin targets
   const getGpColour = (gp) => {
     if (gp >= 70) return 'text-emerald-600 bg-emerald-50 border-emerald-200';
     if (gp >= 60) return 'text-amber-600 bg-amber-50 border-amber-200';
@@ -441,9 +512,9 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       <form onSubmit={handleSaveDish} className="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* LEFT COLUMN: Dish Details & Ingredient Builder (7 Cols) */}
         <div className="lg:col-span-7 space-y-6">
-          {/* Card 1: Dish Metadata */}
+          {/* Card 1: Dish Metadata & Photo Upload */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
-            <h2 className="text-lg font-bold text-slate-800">1. Dish Details & Pricing</h2>
+            <h2 className="text-lg font-bold text-slate-800">1. Dish Details &amp; Photo</h2>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
@@ -496,17 +567,111 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
-                  Photo URL (Optional)
-                </label>
+              {/* Dish Photo Upload / Web Link Section */}
+              <div className="sm:col-span-2 pt-2 border-t border-slate-100">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-bold uppercase text-slate-600">
+                    Dish Photo (Optional — Shown on Customer Kiosk)
+                  </label>
+                  <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-100 text-[11px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setPhotoMode('UPLOAD')}
+                      className={`px-2.5 py-1 rounded-md flex items-center gap-1 transition ${
+                        photoMode === 'UPLOAD'
+                          ? 'bg-white text-indigo-600 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <Upload className="w-3 h-3" />
+                      Upload / Camera
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPhotoMode('URL')}
+                      className={`px-2.5 py-1 rounded-md flex items-center gap-1 transition ${
+                        photoMode === 'URL'
+                          ? 'bg-white text-indigo-600 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <LinkIcon className="w-3 h-3" />
+                      Paste Link
+                    </button>
+                  </div>
+                </div>
+
+                {/* Hidden File Input */}
                 <input
-                  type="url"
-                  placeholder="https://..."
-                  value={photoUrl}
-                  onChange={(e) => setPhotoUrl(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600 text-sm"
+                  ref={photoInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handlePhotoFileChange}
+                  className="hidden"
                 />
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                  {/* Live Photo Preview Box */}
+                  {photoUrl ? (
+                    <div className="relative w-28 h-24 rounded-xl overflow-hidden border border-slate-300 bg-slate-100 shrink-0 shadow-2xs">
+                      <img
+                        src={photoUrl}
+                        alt="Dish preview"
+                        className="w-full h-full object-cover"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setPhotoUrl('')}
+                        className="absolute top-1 right-1 p-1 rounded-full bg-slate-900/80 text-white hover:bg-red-600 transition"
+                        title="Remove Photo"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="w-28 h-24 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 flex flex-col items-center justify-center text-slate-400 shrink-0">
+                      <ImageIcon className="w-6 h-6 mb-1" />
+                      <span className="text-[10px] font-semibold">No Photo</span>
+                    </div>
+                  )}
+
+                  {/* Upload Trigger or URL Input */}
+                  <div className="flex-1 w-full">
+                    {photoMode === 'UPLOAD' ? (
+                      <div className="space-y-1.5">
+                        <button
+                          type="button"
+                          disabled={isProcessingPhoto}
+                          onClick={() => photoInputRef.current?.click()}
+                          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold transition disabled:opacity-50"
+                        >
+                          <Upload className="w-4 h-4" />
+                          {isProcessingPhoto
+                            ? 'Optimising Photo...'
+                            : photoUrl
+                            ? 'Replace Dish Photo'
+                            : 'Choose Photo or Take Picture'}
+                        </button>
+                        <p className="text-[11px] text-slate-500">
+                          Automatically resized &amp; optimised (800px JPEG) for instant Kiosk loading.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-1">
+                        <input
+                          type="url"
+                          placeholder="https://example.com/burger.jpg"
+                          value={photoUrl.startsWith('data:') ? '' : photoUrl}
+                          onChange={(e) => setPhotoUrl(e.target.value)}
+                          className="w-full px-3.5 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-600 text-sm"
+                        />
+                        <p className="text-[11px] text-slate-500">
+                          Paste a direct image URL (or switch to Upload / Camera above).
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -689,7 +854,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                 <Calculator className="w-5 h-5 text-indigo-600" />
-                Live Margin & Nutrition
+                Live Margin &amp; Nutrition
               </h2>
 
               {/* UK VAT Toggle */}
@@ -812,7 +977,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
           {/* Save Button */}
           <button
             type="submit"
-            disabled={isSaving}
+            disabled={isSaving || isProcessingPhoto}
             className="w-full py-3.5 px-6 rounded-2xl bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 text-white font-extrabold text-base shadow-md hover:shadow-lg transition flex items-center justify-center gap-2"
           >
             <Save className="w-5 h-5" />
