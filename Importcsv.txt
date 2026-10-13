@@ -1,0 +1,10 @@
+How the CSV Workflow Works in Practice
+Click CSV Template: Downloads fec-ingredients-template.csv with all 26 headers (supplier, supplierCode, productName, caloriesPer100g, costPerPack, packWeightGrams, inStock, ingredientList, plus the 14 allergens and 4 gluten cereals) and a sample Brakes Brioche Bun row.
+
+Edit in Excel or Google Sheets: Fill in your supplier lines. For allergen columns, you can type Yes (or Y), May Contain (or May), or leave blank/No.
+
+Click Import CSV:
+
+If a row's supplierCode (e.g., BRK-10492) already exists in Firestore, its pack cost, weight, calories, and allergens are updated in place without breaking any dishes linked to that ingredient.
+
+If the supplierCode is new, a new ingredient document is created automatically.
