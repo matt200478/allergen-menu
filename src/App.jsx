@@ -1,6 +1,6 @@
 // src/App.jsx
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Link, Navigate } from 'react-router-dom';
+import { Routes, Route, Link } from 'react-router-dom';
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -34,7 +34,10 @@ import {
   Printer,
   Edit3,
   PlusCircle,
-  AlertTriangle,
+  QrCode,
+  Copy,
+  Check,
+  X,
 } from 'lucide-react';
 
 export default function App() {
@@ -74,7 +77,7 @@ export default function App() {
 }
 
 /* ============================================================================
- * MANAGER LOGIN SCREEN (Firebase Auth Email/Password)
+ * MANAGER LOGIN SCREEN (Firebase Auth Email/Password + Password Reset)
  * ========================================================================== */
 function ManagerLogin() {
   const [email, setEmail] = useState('');
@@ -103,7 +106,9 @@ function ManagerLogin() {
     setResetMessage('');
 
     if (!email.trim()) {
-      setError('Please enter your manager email address above first, then click "Forgot password?".');
+      setError(
+        'Please enter your manager email address above first, then click "Forgot password?".'
+      );
       return;
     }
 
@@ -117,7 +122,9 @@ function ManagerLogin() {
       if (err.code === 'auth/invalid-email') {
         setError('Please enter a valid email address.');
       } else {
-        setError('Unable to send reset email. Please verify the email address is registered.');
+        setError(
+          'Unable to send reset email. Please verify the email address is registered.'
+        );
       }
     } finally {
       setResetLoading(false);
@@ -217,12 +224,12 @@ function ManagerLogin() {
  * PROTECTED MANAGER DASHBOARD SHELL
  * ========================================================================== */
 function ManagerDashboard({ user }) {
-  const [activeTab, setActiveTab] = useState('INGREDIENTS'); // 'INGREDIENTS' | 'DISH_BUILDER' | 'MATRIX' | 'AUDIT'
+  const [activeTab, setActiveTab] = useState('INGREDIENTS');
   const [editingDish, setEditingDish] = useState(null);
   const [dishes, setDishes] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
+  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
 
-  // Subscribe to Dishes & Audit Logs for Matrix and Menu Management
   useEffect(() => {
     const unsubDishes = onSnapshot(collection(db, 'dishes'), (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -257,7 +264,7 @@ function ManagerDashboard({ user }) {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Top Manager Navigation Bar (Hidden when printing A4 Matrix) */}
+      {/* Top Manager Navigation Bar (Hidden when printing) */}
       <header className="bg-slate-900 text-white shadow-md no-print sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -274,7 +281,6 @@ function ManagerDashboard({ user }) {
             </div>
           </div>
 
-          {/* Navigation Tabs */}
           <nav className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
@@ -328,10 +334,20 @@ function ManagerDashboard({ user }) {
               Audit Logs
             </button>
 
+            {/* QR Code Generator Button */}
+            <button
+              type="button"
+              onClick={() => setIsQrModalOpen(true)}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center gap-1.5 ml-1 shadow-xs transition"
+            >
+              <QrCode className="w-4 h-4" />
+              <span>QR Stickers</span>
+            </button>
+
             <Link
               to="/kiosk"
               target="_blank"
-              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-1.5 ml-1"
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-1.5"
             >
               <span>Live Kiosk</span>
               <ExternalLink className="w-3.5 h-3.5" />
@@ -349,8 +365,8 @@ function ManagerDashboard({ user }) {
         </div>
       </header>
 
-      {/* Active Tab Content */}
-      <main>
+      {/* Main Content (Hidden during print if the QR Modal is open) */}
+      <main className={isQrModalOpen ? 'no-print' : ''}>
         {activeTab === 'INGREDIENTS' && <IngredientManager />}
 
         {activeTab === 'DISH_BUILDER' && (
@@ -371,205 +387,213 @@ function ManagerDashboard({ user }) {
 
         {activeTab === 'AUDIT' && <AuditLogViewer logs={auditLogs} />}
       </main>
+
+      {/* Printable QR Code Generator Modal */}
+      {isQrModalOpen && (
+        <QrCodeModal onClose={() => setIsQrModalOpen(false)} />
+      )}
     </div>
   );
 }
 
 /* ============================================================================
- * FEATURE 4: A4 PRINTABLE ALLERGEN MATRIX & DISH DIRECTORY
+ * PRINTABLE QR CODE GENERATOR MODAL (Stickers & Counter Signage)
  * ========================================================================== */
-function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
-  return (
-    <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
-      {/* Screen Controls (Hidden on Print) */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 no-print">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-900">
-            Printable A4 Allergen Matrix &amp; Active Menu
-          </h1>
-          <p className="text-sm text-slate-600">
-            Standard 14-allergen grid formatted for A4 landscape printing. Click any dish to edit its recipe.
-          </p>
-        </div>
+function QrCodeModal({ onClose }) {
+  const defaultKioskUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}/kiosk`
+      : 'https://your-site.netlify.app/kiosk';
 
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onCreateNewDish}
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-xs font-bold text-slate-800"
-          >
-            <PlusCircle className="w-4 h-4 text-indigo-600" />
-            New Dish
-          </button>
-
-          <button
-            type="button"
-            onClick={() => window.print()}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm"
-          >
-            <Printer className="w-4 h-4" />
-            Print A4 Allergen Matrix
-          </button>
-        </div>
-      </div>
-
-      {/* Print Header */}
-      <div className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 overflow-x-auto">
-        <div className="mb-4 flex items-center justify-between border-b border-slate-200 pb-3">
-          <div>
-            <h2 className="text-lg font-black uppercase tracking-tight text-slate-900">
-              Official Food &amp; Beverage Allergen Matrix (14 Major Allergens)
-            </h2>
-            <p className="text-xs text-slate-500">
-              Generated: {new Date().toLocaleDateString('en-GB')} • Key: YES = Contains Allergen | MAY = May Contain Traces | - = Not Present
-            </p>
-          </div>
-        </div>
-
-        {dishes.length === 0 ? (
-          <div className="py-12 text-center text-sm text-slate-500">
-            No dishes created yet. Use the Dish Builder tab to create your first menu item.
-          </div>
-        ) : (
-          <table className="w-full border-collapse text-left text-[11px]">
-            <thead>
-              <tr className="bg-slate-900 text-white">
-                <th className="p-2 border border-slate-700 font-bold">Menu Item</th>
-                <th className="p-2 border border-slate-700 font-bold text-center">kcal</th>
-                {UK_ALLERGENS.map((a) => (
-                  <th
-                    key={a.key}
-                    className="p-1.5 border border-slate-700 font-bold text-center"
-                  >
-                    {a.label}
-                  </th>
-                ))}
-                <th className="p-2 border border-slate-700 text-center no-print">
-                  Edit
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {dishes.map((dish) => {
-                const activeCereals = GLUTEN_CEREALS.filter(
-                  (c) =>
-                    dish.allergens?.[c.key] === 'Yes' ||
-                    dish.allergens?.[c.key] === 'May Contain'
-                ).map((c) => c.label);
-
-                return (
-                  <tr
-                    key={dish.id}
-                    className="border-b border-slate-200 hover:bg-slate-50"
-                  >
-                    <td className="p-2 border border-slate-300 font-bold text-slate-900">
-                      <div className="flex items-center gap-1.5">
-                        <span>{dish.name}</span>
-                        {dish.hasOutOfStockIngredient && (
-                          <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black uppercase no-print">
-                            OOS
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[10px] font-normal text-slate-500">
-                        {dish.category} • £{Number(dish.retailPrice).toFixed(2)}
-                      </div>
-                    </td>
-
-                    <td className="p-2 border border-slate-300 text-center font-semibold">
-                      {dish.totalCalories || 0}
-                    </td>
-
-                    {UK_ALLERGENS.map((a) => {
-                      const status = dish.allergens?.[a.key] || 'No';
-                      return (
-                        <td
-                          key={a.key}
-                          className={`p-1.5 border border-slate-300 text-center font-bold ${
-                            status === 'Yes'
-                              ? 'bg-red-600 text-white'
-                              : status === 'May Contain'
-                              ? 'bg-amber-300 text-slate-950'
-                              : 'text-slate-300'
-                          }`}
-                        >
-                          <div>
-                            {status === 'Yes'
-                              ? 'YES'
-                              : status === 'May Contain'
-                              ? 'MAY'
-                              : '-'}
-                          </div>
-                          {a.key === 'gluten' && activeCereals.length > 0 && (
-                            <div className="text-[9px] font-normal leading-tight mt-0.5">
-                              ({activeCereals.join(', ')})
-                            </div>
-                          )}
-                        </td>
-                      );
-                    })}
-
-                    <td className="p-2 border border-slate-300 text-center no-print">
-                      <button
-                        type="button"
-                        onClick={() => onEditDish(dish)}
-                        className="p-1.5 rounded-lg text-indigo-600 hover:bg-indigo-50"
-                        title="Edit Dish"
-                      >
-                        <Edit3 className="w-4 h-4 mx-auto" />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </div>
+  const [kioskUrl, setKioskUrl] = useState(defaultKioskUrl);
+  const [headline, setHeadline] = useState('Food & Drink Allergen Guide');
+  const [subtext, setSubtext] = useState(
+    'Scan to view live menu calories & filter by your allergens'
   );
-}
+  const [locationBadge, setLocationBadge] = useState(
+    'Bowling Lanes & Soft Play'
+  );
+  const [layoutMode, setLayoutMode] = useState('GRID_4'); // 'SINGLE' | 'GRID_4' | 'GRID_9'
+  const [copied, setCopied] = useState(false);
 
-/* ============================================================================
- * AUDIT LOG VIEWER
- * ========================================================================== */
-function AuditLogViewer({ logs }) {
+  const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&margin=10&format=svg&data=${encodeURIComponent(
+    kioskUrl
+  )}`;
+
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(kioskUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const cardCount =
+    layoutMode === 'SINGLE' ? 1 : layoutMode === 'GRID_4' ? 4 : 9;
+  const cards = Array.from({ length: cardCount });
+
   return (
-    <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-4">
-      <div>
-        <h1 className="text-2xl font-extrabold text-slate-900">
-          System Audit Trail
-        </h1>
-        <p className="text-sm text-slate-600">
-          Immutable log of all ingredient allergen updates, stock changes, and recipe edits.
-        </p>
-      </div>
-
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 divide-y divide-slate-200">
-        {logs.length === 0 ? (
-          <div className="p-8 text-center text-sm text-slate-500">
-            No audit events recorded yet.
-          </div>
-        ) : (
-          logs.map((log) => {
-            const dateStr = log.timestamp?.toDate
-              ? log.timestamp.toDate().toLocaleString('en-GB')
-              : 'Just now';
-
-            return (
-              <div
-                key={log.id}
-                className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm"
-              >
-                <div className="font-semibold text-slate-800">{log.action}</div>
-                <div className="text-xs text-slate-500 font-mono shrink-0">
-                  {dateStr} • UID: {log.userId?.slice(0, 8)}
-                </div>
+    <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto print:static print:bg-white print:p-0">
+      <div className="bg-white rounded-2xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto print:max-h-none print:shadow-none print:border-none print:p-0">
+        {/* Modal Header & Customisation Controls (Hidden when printing) */}
+        <div className="no-print space-y-5 pb-6 border-b border-slate-200">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-amber-500 text-slate-950 flex items-center justify-center font-bold">
+                <QrCode className="w-6 h-6" />
               </div>
-            );
-          })
-        )}
-      </div>
-    </div>
-  );
-}
+              <div>
+                <h2 className="text-xl font-extrabold text-slate-900">
+                  Customer Kiosk QR Code Generator
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Print QR code stickers or counter signs linking directly to your live /kiosk menu.
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Configuration Controls */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                Target Kiosk URL
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={kioskUrl}
+                  onChange={(e) => setKioskUrl(e.target.value)}
+                  className="flex-1 px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyLink}
+                  className="px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold flex items-center gap-1.5 shrink-0"
+                >
+                  {copied ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-600" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4" />
+                      Copy URL
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                Sticker Headline
+              </label>
+              <input
+                type="text"
+                value={headline}
+                onChange={(e) => setHeadline(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm font-semibold"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                Venue / Zone Badge
+              </label>
+              <input
+                type="text"
+                value={locationBadge}
+                onChange={(e) => setLocationBadge(e.target.value)}
+                placeholder="e.g. Table & Lane Service"
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm"
+              />
+            </div>
+
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                Call-to-Action Subtext
+              </label>
+              <input
+                type="text"
+                value={subtext}
+                onChange={(e) => setSubtext(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Print Layout Picker & Print Action */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase text-slate-500 mr-1">
+                Print Layout:
+              </span>
+              {[
+                { id: 'SINGLE', label: '1x Counter Sign' },
+                { id: 'GRID_4', label: '4x Table Talkers (2×2)' },
+                { id: 'GRID_9', label: '9x Lane Stickers (3×3)' },
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setLayoutMode(opt.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
+                    layoutMode === opt.id
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold shadow-md transition"
+            >
+              <Printer className="w-4 h-4" />
+              Print QR Sheet
+            </button>
+          </div>
+        </div>
+
+        {/* Printable QR Cards Preview Area */}
+        <div className="pt-6 print:pt-0">
+          <div
+            className={`grid gap-4 ${
+              layoutMode === 'SINGLE'
+                ? 'grid-cols-1 max-w-md mx-auto'
+                : layoutMode === 'GRID_4'
+                ? 'grid-cols-2'
+                : 'grid-cols-3'
+            }`}
+          >
+            {cards.map((_, idx) => (
+              <div
+                key={idx}
+                className={`border-2 border-slate-900 rounded-2xl text-center flex flex-col items-center justify-between bg-white ${
+                  layoutMode === 'SINGLE'
+                    ? 'p-8 space-y-5'
+                    : layoutMode === 'GRID_4'
+                    ? 'p-5 space-y-3'
+                    : 'p-3.5 space-y-2'
+                }`}
+              >
+                {locationBadge && (
+                  <span className="px-3 py-1 rounded-full bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest">
+                    {locationBadge}
+                  </span>
+                )}
+
+                <h3
+                  className={`font-black text-slate-90
