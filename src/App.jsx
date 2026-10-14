@@ -22,8 +22,11 @@ import { auth, db } from './firebase/config';
 import DishBuilder, {
   UK_ALLERGENS,
   GLUTEN_CEREALS,
+  DIETARY_BADGES,
 } from './components/manager/DishBuilder';
-import IngredientManager from './components/manager/IngredientManager';
+import IngredientManager, {
+  evaluateEhoReviewStatus,
+} from './components/manager/IngredientManager';
 import CustomerKiosk from './components/kiosk/CustomerKiosk';
 
 import {
@@ -60,10 +63,7 @@ export default function App() {
 
   return (
     <Routes>
-      {/* PUBLIC ROUTE: Customer QR Code Kiosk */}
       <Route path="/kiosk" element={<CustomerKiosk />} />
-
-      {/* PROTECTED ROUTE: Manager Dashboard */}
       <Route
         path="/*"
         element={
@@ -82,9 +82,6 @@ export default function App() {
   );
 }
 
-/* ============================================================================
- * MANAGER LOGIN SCREEN (Firebase Auth Email/Password + Password Reset)
- * ========================================================================== */
 function ManagerLogin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -238,9 +235,6 @@ function ManagerLogin() {
   );
 }
 
-/* ============================================================================
- * PROTECTED MANAGER DASHBOARD SHELL
- * ========================================================================== */
 function ManagerDashboard({ user }) {
   const [activeTab, setActiveTab] = useState('INGREDIENTS');
   const [editingDish, setEditingDish] = useState(null);
@@ -249,7 +243,6 @@ function ManagerDashboard({ user }) {
   const [auditLogs, setAuditLogs] = useState([]);
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
 
-  // Subscribe to Dishes, Ingredients (for live Matrix GP% calculation), and Audit Logs
   useEffect(() => {
     const unsubDishes = onSnapshot(collection(db, 'dishes'), (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -281,12 +274,19 @@ function ManagerDashboard({ user }) {
     };
   }, []);
 
+  // Count overdue/due-soon EHO specs for navbar badge
+  const ehoAlertCount = useMemo(() => {
+    return ingredients.filter((ing) => {
+      const { status } = evaluateEhoReviewStatus(ing.lastVerifiedDate);
+      return status === 'OVERDUE' || status === 'DUE_SOON';
+    }).length;
+  }, [ingredients]);
+
   const handleEditDish = (dish) => {
     setEditingDish(dish);
     setActiveTab('DISH_BUILDER');
   };
 
-  // Clone an existing dish into DishBuilder without an ID so saving creates a new dish
   const handleDuplicateDish = (dish) => {
     const clonedDish = {
       ...dish,
@@ -302,7 +302,6 @@ function ManagerDashboard({ user }) {
     setActiveTab('DISH_BUILDER');
   };
 
-  // Delete a dish and record an audit log entry
   const handleDeleteDish = async (dish) => {
     if (
       !window.confirm(
@@ -332,7 +331,6 @@ function ManagerDashboard({ user }) {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Top Manager Navigation Bar (Hidden when printing) */}
       <header className="bg-slate-900 text-white shadow-md no-print sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -360,7 +358,15 @@ function ManagerDashboard({ user }) {
               }`}
             >
               <Package className="w-4 h-4" />
-              Ingredients &amp; OOS
+              <span>Ingredients &amp; EHO</span>
+              {ehoAlertCount > 0 && (
+                <span
+                  className="px-1.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black"
+                  title={`${ehoAlertCount} ingredient spec(s) due for 90-day EHO review`}
+                >
+                  {ehoAlertCount}
+                </span>
+              )}
             </button>
 
             <button
@@ -402,7 +408,6 @@ function ManagerDashboard({ user }) {
               Audit Logs
             </button>
 
-            {/* QR Code Generator Button */}
             <button
               type="button"
               onClick={() => setIsQrModalOpen(true)}
@@ -433,7 +438,6 @@ function ManagerDashboard({ user }) {
         </div>
       </header>
 
-      {/* Main Content (Hidden during print if the QR Modal is open) */}
       <main className={isQrModalOpen ? 'no-print' : ''}>
         {activeTab === 'INGREDIENTS' && <IngredientManager />}
 
@@ -459,15 +463,11 @@ function ManagerDashboard({ user }) {
         {activeTab === 'AUDIT' && <AuditLogViewer logs={auditLogs} />}
       </main>
 
-      {/* Printable QR Code Generator Modal */}
       {isQrModalOpen && <QrCodeModal onClose={() => setIsQrModalOpen(false)} />}
     </div>
   );
 }
 
-/* ============================================================================
- * PRINTABLE QR CODE GENERATOR MODAL (Stickers & Counter Signage)
- * ========================================================================== */
 function QrCodeModal({ onClose }) {
   const defaultKioskUrl =
     typeof window !== 'undefined'
@@ -482,7 +482,7 @@ function QrCodeModal({ onClose }) {
   const [locationBadge, setLocationBadge] = useState(
     'Bowling Lanes & Soft Play'
   );
-  const [layoutMode, setLayoutMode] = useState('GRID_4'); // 'SINGLE' | 'GRID_4' | 'GRID_9'
+  const [layoutMode, setLayoutMode] = useState('GRID_4');
   const [copied, setCopied] = useState(false);
 
   const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&margin=10&format=svg&data=${encodeURIComponent(
@@ -502,7 +502,6 @@ function QrCodeModal({ onClose }) {
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto print:static print:bg-white print:p-0">
       <div className="bg-white rounded-2xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[92vh] overflow-y-auto print:max-h-none print:shadow-none print:border-none print:p-0">
-        {/* Modal Header & Customisation Controls (Hidden when printing) */}
         <div className="no-print space-y-5 pb-6 border-b border-slate-200">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
@@ -528,7 +527,6 @@ function QrCodeModal({ onClose }) {
             </button>
           </div>
 
-          {/* Configuration Controls */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
             <div className="sm:col-span-2">
               <label
@@ -619,7 +617,6 @@ function QrCodeModal({ onClose }) {
             </div>
           </div>
 
-          {/* Print Layout Picker & Print Action */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold uppercase text-slate-500 mr-1">
@@ -656,7 +653,6 @@ function QrCodeModal({ onClose }) {
           </div>
         </div>
 
-        {/* Printable QR Cards Preview Area */}
         <div className="pt-6 print:pt-0">
           <div
             className={`grid gap-4 ${
@@ -730,9 +726,6 @@ function QrCodeModal({ onClose }) {
   );
 }
 
-/* ============================================================================
- * FEATURE 4: A4 PRINTABLE ALLERGEN MATRIX, LIVE GP% & 1-CLICK DISH CLONING
- * ========================================================================== */
 function PrintableAllergenMatrix({
   dishes,
   ingredients,
@@ -743,7 +736,6 @@ function PrintableAllergenMatrix({
 }) {
   const [deductVat, setDeductVat] = useState(false);
 
-  // Build O(1) lookup map of live ingredients so Matrix calculates real-time cost & GP%
   const ingredientMap = useMemo(() => {
     const map = {};
     (ingredients || []).forEach((ing) => {
@@ -752,7 +744,6 @@ function PrintableAllergenMatrix({
     return map;
   }, [ingredients]);
 
-  // Compute live portion cost and GP% for every dish
   const enrichedDishes = useMemo(() => {
     return dishes.map((dish) => {
       let liveCost = 0;
@@ -780,7 +771,6 @@ function PrintableAllergenMatrix({
     });
   }, [dishes, ingredientMap, deductVat]);
 
-  // Summary Margin KPIs across the menu
   const menuStats = useMemo(() => {
     if (enrichedDishes.length === 0) return { avgGp: 0, lowGpCount: 0 };
     const totalGp = enrichedDishes.reduce((acc, d) => acc + d.gpPercent, 0);
@@ -793,19 +783,17 @@ function PrintableAllergenMatrix({
 
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
-      {/* Screen Controls & Live Margin Bar (Hidden on A4 Print) */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-200 no-print">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900">
             Menu Profitability &amp; A4 Allergen Matrix
           </h1>
           <p className="text-sm text-slate-600">
-            Live GP% margin tracking, 1-click dish cloning, and A4 landscape allergen printing.
+            Live GP% margin tracking, dietary tags, 1-click dish cloning, and A4 landscape allergen printing.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          {/* VAT Toggle for Matrix GP% Column */}
           <label
             htmlFor="matrix-vat-toggle"
             className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-slate-300 text-xs font-bold text-slate-700 cursor-pointer"
@@ -841,7 +829,6 @@ function PrintableAllergenMatrix({
         </div>
       </div>
 
-      {/* Live Menu Margin KPI Strip (Hidden on Print) */}
       {enrichedDishes.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 no-print">
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
@@ -900,7 +887,6 @@ function PrintableAllergenMatrix({
         </div>
       )}
 
-      {/* Printable Matrix Card */}
       <div className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 overflow-x-auto">
         <div className="mb-4 flex items-center justify-between border-b border-slate-200 pb-3">
           <div>
@@ -927,7 +913,6 @@ function PrintableAllergenMatrix({
                 <th className="p-2 border border-slate-700 font-bold text-center">
                   kcal
                 </th>
-                {/* Manager-Only Live Cost & GP% Column (Hidden on A4 Print) */}
                 <th className="p-2 border border-slate-700 font-bold text-center no-print bg-indigo-950">
                   Cost / GP%
                 </th>
@@ -952,6 +937,10 @@ function PrintableAllergenMatrix({
                     dish.allergens?.[c.key] === 'May Contain'
                 ).map((c) => c.label);
 
+                const activeDietary = DIETARY_BADGES.filter((b) =>
+                  (dish.dietaryTags || []).includes(b.key)
+                );
+
                 const gpBadgeColour =
                   dish.gpPercent >= 70
                     ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
@@ -965,8 +954,16 @@ function PrintableAllergenMatrix({
                     className="border-b border-slate-200 hover:bg-slate-50"
                   >
                     <td className="p-2 border border-slate-300 font-bold text-slate-900">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1">
                         <span>{dish.name}</span>
+                        {activeDietary.map((b) => (
+                          <span
+                            key={b.key}
+                            className={`px-1.5 py-0.2 rounded text-[9px] font-black border ${b.pillClass}`}
+                          >
+                            {b.short}
+                          </span>
+                        ))}
                         {!dish.isActive && (
                           <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[9px] font-bold uppercase no-print">
                             Hidden
@@ -988,7 +985,6 @@ function PrintableAllergenMatrix({
                       {dish.totalCalories || 0}
                     </td>
 
-                    {/* Live Cost & GP% Cell (Hidden on Print) */}
                     <td className="p-2 border border-slate-300 text-center no-print">
                       <div className="font-bold text-slate-800">
                         £{dish.liveCost.toFixed(2)}
@@ -1029,7 +1025,6 @@ function PrintableAllergenMatrix({
                       );
                     })}
 
-                    {/* Edit, Duplicate (Clone), and Delete Actions (Hidden on Print) */}
                     <td className="p-2 border border-slate-300 text-center no-print">
                       <div className="inline-flex items-center gap-1">
                         <button
@@ -1071,9 +1066,6 @@ function PrintableAllergenMatrix({
   );
 }
 
-/* ============================================================================
- * AUDIT LOG VIEWER
- * ========================================================================== */
 function AuditLogViewer({ logs }) {
   return (
     <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-4">
@@ -1082,7 +1074,7 @@ function AuditLogViewer({ logs }) {
           System Audit Trail
         </h1>
         <p className="text-sm text-slate-600">
-          Immutable log of all ingredient allergen updates, stock changes, and recipe edits.
+          Immutable log of all ingredient allergen updates, EHO 90-day spec verifications, stock changes, and recipe edits.
         </p>
       </div>
 
