@@ -27,6 +27,8 @@ import {
   FileSpreadsheet,
   Sparkles,
   RefreshCw,
+  ShieldCheck,
+  Clock,
 } from 'lucide-react';
 
 // Helper to create a clean default allergen map
@@ -41,12 +43,41 @@ const createDefaultAllergens = () => {
   return map;
 };
 
+/**
+ * Evaluates a Firestore timestamp against the 90-day EHO review threshold.
+ * Returns { status: 'VALID' | 'DUE_SOON' | 'OVERDUE', daysAgo: number | null, dateStr: string }
+ */
+export const evaluateEhoReviewStatus = (timestamp) => {
+  if (!timestamp) {
+    return { status: 'OVERDUE', daysAgo: null, dateStr: 'Never verified' };
+  }
+
+  const verifiedDate = timestamp.toDate
+    ? timestamp.toDate()
+    : new Date(timestamp);
+
+  if (Number.isNaN(verifiedDate.getTime())) {
+    return { status: 'OVERDUE', daysAgo: null, dateStr: 'Never verified' };
+  }
+
+  const now = new Date();
+  const diffMs = now.getTime() - verifiedDate.getTime();
+  const daysAgo = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+  const dateStr = verifiedDate.toLocaleDateString('en-GB');
+
+  if (daysAgo >= 90) {
+    return { status: 'OVERDUE', daysAgo, dateStr };
+  }
+  if (daysAgo >= 75) {
+    return { status: 'DUE_SOON', daysAgo, dateStr };
+  }
+  return { status: 'VALID', daysAgo, dateStr };
+};
+
 // ============================================================================
 // SMART INGREDIENT TEXT PARSER (14 Major Allergens + 4 Gluten Cereals)
 // ============================================================================
 
-// Known safe culinary terms that contain allergen words as substrings
-// (e.g. "Nutmeg" in sausage rolls must NOT trigger Tree Nuts)
 const FALSE_POSITIVE_PHRASES = [
   'nutmeg',
   'butternut',
@@ -80,9 +111,7 @@ const FALSE_POSITIVE_PHRASES = [
   'dairy-free',
 ];
 
-// Keyword dictionary mapped to each allergen and gluten cereal key
 const ALLERGEN_DETECTION_MAP = {
-  // 4 Specific Gluten Cereals
   wheat: [
     'wheat', 'spelt', 'kamut', 'khorasan', 'durum', 'semolina',
     'couscous', 'bulgur', 'farro', 'triticale',
@@ -90,8 +119,6 @@ const ALLERGEN_DETECTION_MAP = {
   barley: ['barley', 'malt extract', 'malted'],
   rye: ['rye'],
   oats: ['oat', 'oats', 'oatmeal'],
-
-  // 14 Major Allergens
   gluten: [
     'gluten', 'wheat', 'barley', 'rye', 'oat', 'oats', 'oatmeal',
     'spelt', 'kamut', 'khorasan', 'durum', 'semolina', 'couscous', 'bulgur', 'triticale',
@@ -149,7 +176,6 @@ const ALLERGEN_DETECTION_MAP = {
   ],
 };
 
-// Pre-compile word-boundary regular expressions for each allergen key
 const COMPILED_ALLERGEN_REGEXES = Object.fromEntries(
   Object.entries(ALLERGEN_DETECTION_MAP).map(([key, words]) => {
     const pattern = words
@@ -160,38 +186,29 @@ const COMPILED_ALLERGEN_REGEXES = Object.fromEntries(
   })
 );
 
-// Regex to split main recipe ingredients from "May contain / Factory trace" statements
 const TRACE_SPLIT_REGEX =
   /(?:may\s+(?:also\s+)?contain(?:\s+traces\s+of)?|traces\s+of|not\s+suitable\s+for\s+.*?\s+allergy|produced\s+in\s+a\s+(?:factory|facility|site|environment)\s+that\s+(?:also\s+)?handles|made\s+on\s+a\s+line\s+that\s+handles|manufactured\s+on\s+equipment\s+that\s+processes)/i;
 
-/**
- * Parses a pasted supplier ingredient string and returns an allergen object
- * with "Yes", "May Contain", or "No" for all 14 allergens + 4 gluten cereals.
- */
 export const detectAllergensFromIngredientText = (rawText) => {
   const detected = createDefaultAllergens();
   if (!rawText || !rawText.trim()) return detected;
 
-  // 1. Mask false-positive culinary terms (like "Nutmeg" or "Cocoa Butter")
   let sanitisedText = rawText.toLowerCase();
   FALSE_POSITIVE_PHRASES.forEach((phrase) => {
     const safeRegex = new RegExp(`\\b${phrase}\\b`, 'gi');
     sanitisedText = sanitisedText.replace(safeRegex, ' ');
   });
 
-  // 2. Separate Main Ingredients ("Yes") from Trace / Cross-Contamination clauses ("May Contain")
   const parts = sanitisedText.split(TRACE_SPLIT_REGEX);
   const mainIngredientsText = parts[0] || '';
   const mayContainText = parts.slice(1).join(' ');
 
-  // 3. Scan Main Ingredients first ("Yes")
   Object.entries(COMPILED_ALLERGEN_REGEXES).forEach(([allergenKey, regex]) => {
     if (regex.test(mainIngredientsText)) {
       detected[allergenKey] = 'Yes';
     }
   });
 
-  // 4. Scan "May Contain" section ("May Contain" only if not already "Yes")
   if (mayContainText) {
     Object.entries(COMPILED_ALLERGEN_REGEXES).forEach(([allergenKey, regex]) => {
       if (detected[allergenKey] !== 'Yes' && regex.test(mayContainText)) {
@@ -200,7 +217,6 @@ export const detectAllergensFromIngredientText = (rawText) => {
     });
   }
 
-  // 5. Ensure parent 'gluten' reflects the highest state of wheat, barley, rye, or oats
   const cerealStates = GLUTEN_CEREALS.map((c) => detected[c.key]);
   if (cerealStates.includes('Yes')) {
     detected.gluten = 'Yes';
@@ -223,7 +239,6 @@ const INITIAL_FORM_STATE = {
   allergens: createDefaultAllergens(),
 };
 
-// Ordered CSV Column Headers
 const CSV_BASE_HEADERS = [
   'supplier',
   'supplierCode',
@@ -322,7 +337,7 @@ export default function IngredientManager() {
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterStock, setFilterStock] = useState('ALL'); // 'ALL' | 'IN_STOCK' | 'OOS'
+  const [filterStock, setFilterStock] = useState('ALL'); // 'ALL' | 'IN_STOCK' | 'OOS' | 'EHO_DUE'
 
   // Modal / Form State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -335,7 +350,7 @@ export default function IngredientManager() {
 
   const fileInputRef = useRef(null);
 
-  // 1. Subscribe to both Ingredients and Dishes (to map OOS dependencies)
+  // 1. Subscribe to both Ingredients and Dishes
   useEffect(() => {
     const unsubIngredients = onSnapshot(collection(db, 'ingredients'), (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -355,7 +370,7 @@ export default function IngredientManager() {
     };
   }, []);
 
-  // 2. Map Ingredient ID -> Array of Dishes that rely on it (Feature 3: OOS Dependency Mapping)
+  // 2. Map Ingredient ID -> Array of Dishes that rely on it
   const dependencyMap = useMemo(() => {
     const map = {};
     dishes.forEach((dish) => {
@@ -371,13 +386,49 @@ export default function IngredientManager() {
     return map;
   }, [dishes]);
 
+  // Count how many ingredients are Due Soon (75-89d) or Overdue (90d+) for EHO Review
+  const ehoDueCount = useMemo(() => {
+    return ingredients.filter((ing) => {
+      const { status } = evaluateEhoReviewStatus(ing.lastVerifiedDate);
+      return status === 'OVERDUE' || status === 'DUE_SOON';
+    }).length;
+  }, [ingredients]);
+
+  // 1-Click EHO Spec Verification Handler
+  const handleVerifyIngredientSpec = async (ingredient) => {
+    try {
+      const batch = writeBatch(db);
+      const ingRef = doc(db, 'ingredients', ingredient.id);
+      batch.update(ingRef, {
+        lastVerifiedDate: serverTimestamp(),
+      });
+
+      const auditRef = doc(collection(db, 'audit_logs'));
+      batch.set(auditRef, {
+        timestamp: serverTimestamp(),
+        action: `EHO 90-Day Spec Verified: "${ingredient.productName}" (${ingredient.supplierCode})`,
+        userId: auth.currentUser?.uid || 'manager-session',
+      });
+
+      await batch.commit();
+      setFeedback({
+        type: 'success',
+        text: `EHO specification date verified for "${ingredient.productName}" (valid for 90 days).`,
+      });
+    } catch (error) {
+      setFeedback({
+        type: 'error',
+        text: `Could not verify spec: ${error.message}`,
+      });
+    }
+  };
+
   // Handle typing or pasting into the Supplier Sub-Ingredients textarea
   const handleIngredientListChange = (newText) => {
     setFormData((prev) => {
       let updatedProductName = prev.productName;
       let cleanedText = newText;
 
-      // Auto-extract leading "Product Name: " if pasted e.g. "Sausage Rolls: Water, Wheat..."
       if (!prev.productName.trim() && newText.includes(':')) {
         const colonIndex = newText.indexOf(':');
         if (colonIndex > 2 && colonIndex < 50) {
@@ -399,7 +450,6 @@ export default function IngredientManager() {
     });
   };
 
-  // Manual Re-scan button handler
   const handleRescanAllergens = () => {
     const scanned = detectAllergensFromIngredientText(formData.ingredientList);
     setFormData((prev) => ({
@@ -408,7 +458,6 @@ export default function IngredientManager() {
     }));
   };
 
-  // Cycle allergen status manually: "No" -> "May Contain" -> "Yes" -> "No"
   const handleCycleAllergen = (key) => {
     const order = ['No', 'May Contain', 'Yes'];
     setFormData((prev) => {
@@ -416,7 +465,6 @@ export default function IngredientManager() {
       const next = order[(order.indexOf(current) + 1) % order.length];
       const updatedAllergens = { ...prev.allergens, [key]: next };
 
-      // Automatically escalate parent 'gluten' if any specific cereal is Yes or May Contain
       if (GLUTEN_CEREALS.some((c) => c.key === key)) {
         const cerealStates = GLUTEN_CEREALS.map((c) => updatedAllergens[c.key]);
         if (cerealStates.includes('Yes')) {
@@ -430,7 +478,6 @@ export default function IngredientManager() {
     });
   };
 
-  // Summary of currently selected allergens inside the modal for quick manager verification
   const modalAllergenSummary = useMemo(() => {
     const allItems = [...UK_ALLERGENS, ...GLUTEN_CEREALS];
     const yesList = allItems
@@ -442,7 +489,6 @@ export default function IngredientManager() {
     return { yesList, mayList };
   }, [formData.allergens]);
 
-  // Open modal for New or Edit
   const openModal = (ingredient = null) => {
     if (ingredient) {
       setEditingId(ingredient.id);
@@ -475,7 +521,6 @@ export default function IngredientManager() {
 
       batch.update(ingRef, {
         inStock: newStockState,
-        lastVerifiedDate: serverTimestamp(),
       });
 
       affectedDishes.forEach((dish) => {
@@ -544,7 +589,7 @@ export default function IngredientManager() {
       batch.set(auditRef, {
         timestamp: serverTimestamp(),
         action: editingId
-          ? `Updated ingredient allergen & spec profile: "${payload.productName}"`
+          ? `Updated & EHO-verified ingredient profile: "${payload.productName}"`
           : `Created new ingredient: "${payload.productName}" (${payload.supplierCode})`,
         userId: auth.currentUser?.uid || 'manager-session',
       });
@@ -553,7 +598,7 @@ export default function IngredientManager() {
       setIsModalOpen(false);
       setFeedback({
         type: 'success',
-        text: `Ingredient "${payload.productName}" saved and audit log recorded.`,
+        text: `Ingredient "${payload.productName}" saved and EHO 90-day verification timer reset.`,
       });
     } catch (error) {
       console.error('Failed to save ingredient:', error);
@@ -585,7 +630,7 @@ export default function IngredientManager() {
     }
   };
 
-  // 5. CSV Export (Full Database Backup)
+  // 5. CSV Export
   const handleExportCsv = () => {
     if (ingredients.length === 0) {
       setFeedback({
@@ -633,7 +678,7 @@ export default function IngredientManager() {
     });
   };
 
-  // 6. Download Blank CSV Template with Sample Row
+  // 6. Download Blank CSV Template
   const handleDownloadCsvTemplate = () => {
     const sampleRow = [
       'Brakes',
@@ -661,7 +706,7 @@ export default function IngredientManager() {
     URL.revokeObjectURL(url);
   };
 
-  // 7. CSV Bulk Import (Upsert by supplierCode + Auto-Allergen Detection fallback)
+  // 7. CSV Bulk Import
   const handleImportCsvFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -730,7 +775,6 @@ export default function IngredientManager() {
             ? row[getColIndex('ingredientlist')]?.trim() || productName
             : productName;
 
-        // Start with auto-detected allergens from ingredientList text, then allow explicit CSV columns to override
         const autoDetected = detectAllergensFromIngredientText(ingredientList);
         const allergens = { ...autoDetected };
 
@@ -909,11 +953,16 @@ export default function IngredientManager() {
         ing.productName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         ing.supplierCode?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         ing.supplier?.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesStock =
-        filterStock === 'ALL' ||
-        (filterStock === 'IN_STOCK' && ing.inStock !== false) ||
-        (filterStock === 'OOS' && ing.inStock === false);
-      return matchesSearch && matchesStock;
+
+      if (!matchesSearch) return false;
+
+      if (filterStock === 'IN_STOCK') return ing.inStock !== false;
+      if (filterStock === 'OOS') return ing.inStock === false;
+      if (filterStock === 'EHO_DUE') {
+        const { status } = evaluateEhoReviewStatus(ing.lastVerifiedDate);
+        return status === 'OVERDUE' || status === 'DUE_SOON';
+      }
+      return true;
     });
   }, [ingredients, searchQuery, filterStock]);
 
@@ -923,10 +972,10 @@ export default function IngredientManager() {
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
           <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900">
-            Ingredient &amp; Stock Inventory
+            Ingredient &amp; EHO Spec Inventory
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Manage supplier packs, auto-detected 14-allergen profiles, CSV bulk imports, and Out-of-Stock (OOS) dish dependencies.
+            Manage supplier packs, 90-day EHO spec verification traffic lights, CSV bulk imports, and Out-of-Stock dependencies.
           </p>
         </div>
 
@@ -994,6 +1043,32 @@ export default function IngredientManager() {
         </div>
       </div>
 
+      {/* EHO 90-Day Review Alert Banner (if any ingredients are due/overdue) */}
+      {ehoDueCount > 0 && (
+        <div className="mt-4 p-4 rounded-xl bg-amber-50 border-2 border-amber-400 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <h3 className="text-xs font-extrabold uppercase tracking-wide text-amber-950">
+                EHO 90-Day Specification Review Notice
+              </h3>
+              <p className="text-xs text-amber-900 mt-0.5">
+                <strong>{ehoDueCount}</strong> ingredient specification(s) are approaching or past the 90-day verification window. Please check supplier labels and click <strong>Verify Today</strong>.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              setFilterStock(filterStock === 'EHO_DUE' ? 'ALL' : 'EHO_DUE')
+            }
+            className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-extrabold shrink-0 transition"
+          >
+            {filterStock === 'EHO_DUE' ? 'Show All Ingredients' : `Filter ${ehoDueCount} Due Item(s)`}
+          </button>
+        </div>
+      )}
+
       {/* Feedback Banner */}
       {feedback && (
         <div
@@ -1023,7 +1098,7 @@ export default function IngredientManager() {
         </div>
       )}
 
-      {/* Search & Stock Filter Bar */}
+      {/* Search & Stock / EHO Filter Bar */}
       <div className="mt-6 flex flex-col sm:flex-row gap-3 items-center justify-between">
         <div className="relative w-full sm:w-96">
           <label htmlFor="ingredient-search" className="sr-only">
@@ -1042,23 +1117,24 @@ export default function IngredientManager() {
           />
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          {['ALL', 'IN_STOCK', 'OOS'].map((status) => (
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          {[
+            { id: 'ALL', label: `All (${ingredients.length})` },
+            { id: 'IN_STOCK', label: 'In Stock' },
+            { id: 'OOS', label: 'Out of Stock (OOS)' },
+            { id: 'EHO_DUE', label: `EHO Review Due (${ehoDueCount})` },
+          ].map((tab) => (
             <button
-              key={status}
+              key={tab.id}
               type="button"
-              onClick={() => setFilterStock(status)}
+              onClick={() => setFilterStock(tab.id)}
               className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition ${
-                filterStock === status
+                filterStock === tab.id
                   ? 'bg-slate-900 text-white border-slate-900'
                   : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
               }`}
             >
-              {status === 'ALL'
-                ? `All (${ingredients.length})`
-                : status === 'IN_STOCK'
-                ? 'In Stock Only'
-                : 'Out of Stock (OOS)'}
+              {tab.label}
             </button>
           ))}
         </div>
@@ -1073,8 +1149,9 @@ export default function IngredientManager() {
                 <th className="py-3.5 px-4">Stock Status</th>
                 <th className="py-3.5 px-4">Ingredient &amp; Supplier</th>
                 <th className="py-3.5 px-4">Pack Cost / Weight</th>
+                <th className="py-3.5 px-4">EHO 90-Day Spec Check</th>
                 <th className="py-3.5 px-4">Active Allergens</th>
-                <th className="py-3.5 px-4">Menu Dependencies (OOS Impact)</th>
+                <th className="py-3.5 px-4">Menu Dependencies</th>
                 <th className="py-3.5 px-4 text-right">Actions</th>
               </tr>
             </thead>
@@ -1086,6 +1163,7 @@ export default function IngredientManager() {
                     ing.allergens?.[a.key] === 'Yes' ||
                     ing.allergens?.[a.key] === 'May Contain'
                 );
+                const ehoStatus = evaluateEhoReviewStatus(ing.lastVerifiedDate);
 
                 return (
                   <tr
@@ -1094,6 +1172,7 @@ export default function IngredientManager() {
                       ing.inStock === false ? 'bg-red-50/60' : 'hover:bg-slate-50'
                     }
                   >
+                    {/* Stock Toggle */}
                     <td className="py-3.5 px-4">
                       <button
                         type="button"
@@ -1118,6 +1197,7 @@ export default function IngredientManager() {
                       </button>
                     </td>
 
+                    {/* Name & Supplier */}
                     <td className="py-3.5 px-4">
                       <div className="font-bold text-slate-900">
                         {ing.productName}
@@ -1129,6 +1209,7 @@ export default function IngredientManager() {
                       </div>
                     </td>
 
+                    {/* Cost & Pack Size */}
                     <td className="py-3.5 px-4">
                       <div className="font-bold text-slate-800">
                         £{Number(ing.costPerPack).toFixed(2)}
@@ -1138,6 +1219,52 @@ export default function IngredientManager() {
                       </div>
                     </td>
 
+                    {/* EHO 90-Day Traffic Light & 1-Click Verify */}
+                    <td className="py-3.5 px-4">
+                      <div className="flex flex-col items-start gap-1">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                            ehoStatus.status === 'VALID'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                              : ehoStatus.status === 'DUE_SOON'
+                              ? 'bg-amber-100 text-amber-950 border-amber-400'
+                              : 'bg-red-100 text-red-900 border-red-400'
+                          }`}
+                        >
+                          <span
+                            className={`w-2 h-2 rounded-full ${
+                              ehoStatus.status === 'VALID'
+                                ? 'bg-emerald-500'
+                                : ehoStatus.status === 'DUE_SOON'
+                                ? 'bg-amber-500'
+                                : 'bg-red-600'
+                            }`}
+                          />
+                          {ehoStatus.status === 'VALID'
+                            ? `Verified (${ehoStatus.daysAgo}d ago)`
+                            : ehoStatus.status === 'DUE_SOON'
+                            ? `Due Soon (${ehoStatus.daysAgo}d ago)`
+                            : ehoStatus.daysAgo !== null
+                            ? `Overdue (${ehoStatus.daysAgo}d ago)`
+                            : 'Unverified'}
+                        </span>
+
+                        <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                          <span>Checked: {ehoStatus.dateStr}</span>
+                          <button
+                            type="button"
+                            onClick={() => handleVerifyIngredientSpec(ing)}
+                            className="inline-flex items-center gap-0.5 text-indigo-600 hover:text-indigo-800 font-bold underline"
+                            title="Stamp today's date as EHO verified and log audit trail"
+                          >
+                            <ShieldCheck className="w-3 h-3" />
+                            Verify Today
+                          </button>
+                        </div>
+                      </div>
+                    </td>
+
+                    {/* Allergen Badges */}
                     <td className="py-3.5 px-4">
                       <div className="flex flex-wrap gap-1 max-w-xs">
                         {activeAllergens.length === 0 ? (
@@ -1162,6 +1289,7 @@ export default function IngredientManager() {
                       </div>
                     </td>
 
+                    {/* Dependent Dishes */}
                     <td className="py-3.5 px-4">
                       {dependentDishes.length === 0 ? (
                         <span className="text-xs text-slate-400">Unused</span>
@@ -1183,6 +1311,7 @@ export default function IngredientManager() {
                       )}
                     </td>
 
+                    {/* Actions */}
                     <td className="py-3.5 px-4 text-right">
                       <div className="inline-flex items-center gap-1">
                         <button
@@ -1231,7 +1360,7 @@ export default function IngredientManager() {
             </div>
 
             <form onSubmit={handleSaveIngredient} className="mt-4 space-y-5">
-              {/* Supplier Sub-Ingredients List placed FIRST so pasting can auto-fill Product Name & Allergens */}
+              {/* Supplier Sub-Ingredients List */}
               <div className="p-4 rounded-2xl bg-indigo-50/60 border border-indigo-200 space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label
@@ -1262,7 +1391,6 @@ export default function IngredientManager() {
                       type="button"
                       onClick={handleRescanAllergens}
                       className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[11px] font-bold transition"
-                      title="Re-scan ingredient text and update allergen pills"
                     >
                       <RefreshCw className="w-3 h-3" />
                       Re-scan Text
@@ -1281,7 +1409,6 @@ export default function IngredientManager() {
                   className="w-full px-3.5 py-2.5 rounded-xl border border-indigo-300 bg-white text-sm focus:ring-2 focus:ring-indigo-600"
                 />
 
-                {/* Live Verification Summary Banner */}
                 {formData.ingredientList.trim() && (
                   <div className="p-2.5 rounded-xl bg-white border border-indigo-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="space-y-0.5">
