@@ -5,6 +5,7 @@ import { db } from '../../firebase/config';
 import {
   UK_ALLERGENS,
   GLUTEN_CEREALS,
+  DIETARY_BADGES,
   formatPPDSString,
 } from '../manager/DishBuilder';
 import {
@@ -22,6 +23,7 @@ import {
   Eye,
   EyeOff,
   Sparkles,
+  Leaf,
 } from 'lucide-react';
 
 export default function CustomerKiosk() {
@@ -29,9 +31,10 @@ export default function CustomerKiosk() {
   const [loading, setLoading] = useState(true);
 
   // Customer Filter State
-  const [excludedAllergens, setExcludedAllergens] = useState([]); // Array of allergen keys to avoid
-  const [strictMode, setStrictMode] = useState(true); // True = also exclude "May Contain"
-  const [showExcludedDishes, setShowExcludedDishes] = useState(false); // False = hide unsafe dishes; True = dim them with reason
+  const [excludedAllergens, setExcludedAllergens] = useState([]);
+  const [selectedDietaryTags, setSelectedDietaryTags] = useState([]); // Array of required dietary keys ('V', 'VE', 'GF', 'DF', 'HALAL')
+  const [strictMode, setStrictMode] = useState(true);
+  const [showExcludedDishes, setShowExcludedDishes] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [isFilterDrawerOpen, setIsFilterDrawerOpen] = useState(true);
@@ -63,26 +66,32 @@ export default function CustomerKiosk() {
     return () => unsubscribe();
   }, []);
 
-  // Dynamically derive unique categories from active dishes
   const categories = useMemo(() => {
     const unique = new Set(dishes.map((d) => d.category).filter(Boolean));
     return ['ALL', ...Array.from(unique)];
   }, [dishes]);
 
-  // Toggle an allergen in the customer's exclusion list
   const toggleAllergenExclusion = (key) => {
     setExcludedAllergens((prev) =>
       prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
     );
   };
 
+  const toggleDietaryFilter = (tagKey) => {
+    setSelectedDietaryTags((prev) =>
+      prev.includes(tagKey)
+        ? prev.filter((item) => item !== tagKey)
+        : [...prev, tagKey]
+    );
+  };
+
   const clearAllFilters = () => {
     setExcludedAllergens([]);
+    setSelectedDietaryTags([]);
     setSelectedCategory('ALL');
     setSearchQuery('');
   };
 
-  // Lookup label for any allergen or cereal key
   const getAllergenLabel = (key) => {
     const foundMain = UK_ALLERGENS.find((a) => a.key === key);
     if (foundMain) return foundMain.label;
@@ -90,7 +99,7 @@ export default function CustomerKiosk() {
     return foundCereal ? `Gluten (${foundCereal.label})` : key;
   };
 
-  // 2. Evaluate each dish against the customer's selected allergens & Strict Mode
+  // 2. Evaluate each dish against Dietary Filters, Allergen Exclusions & Strict Mode
   const evaluatedDishes = useMemo(() => {
     return dishes
       .filter((dish) => {
@@ -100,12 +109,19 @@ export default function CustomerKiosk() {
           !searchQuery.trim() ||
           dish.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
           dish.category?.toLowerCase().includes(searchQuery.toLowerCase());
-        return matchesCategory && matchesSearch;
+
+        // Check 1-tap Dietary & Lifestyle filters (dish must have all selected dietary tags)
+        const dishTags = dish.dietaryTags || [];
+        const matchesDietary = selectedDietaryTags.every((reqTag) =>
+          dishTags.includes(reqTag)
+        );
+
+        return matchesCategory && matchesSearch && matchesDietary;
       })
       .map((dish) => {
         const dishAllergens = dish.allergens || {};
-        const directConflicts = []; // Marked "Yes"
-        const traceConflicts = []; // Marked "May Contain"
+        const directConflicts = [];
+        const traceConflicts = [];
 
         excludedAllergens.forEach((allergenKey) => {
           const status = dishAllergens[allergenKey] || 'No';
@@ -116,7 +132,6 @@ export default function CustomerKiosk() {
           }
         });
 
-        // Determine if dish is excluded based on Strict Mode toggle
         const isExcluded =
           directConflicts.length > 0 ||
           (strictMode && traceConflicts.length > 0);
@@ -128,7 +143,14 @@ export default function CustomerKiosk() {
           isExcluded,
         };
       });
-  }, [dishes, selectedCategory, searchQuery, excludedAllergens, strictMode]);
+  }, [
+    dishes,
+    selectedCategory,
+    searchQuery,
+    selectedDietaryTags,
+    excludedAllergens,
+    strictMode,
+  ]);
 
   const visibleDishes = useMemo(() => {
     if (showExcludedDishes) return evaluatedDishes;
@@ -136,6 +158,8 @@ export default function CustomerKiosk() {
   }, [evaluatedDishes, showExcludedDishes]);
 
   const hiddenCount = evaluatedDishes.length - visibleDishes.length;
+  const activeFilterCount =
+    excludedAllergens.length + selectedDietaryTags.length;
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 pb-20">
@@ -144,14 +168,14 @@ export default function CustomerKiosk() {
         <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center font-black text-lg shadow-inner">
-              F&B
+              F&amp;B
             </div>
             <div>
               <h1 className="text-lg sm:text-xl font-extrabold tracking-tight">
                 Interactive Menu &amp; Allergen Guide
               </h1>
               <p className="text-xs text-slate-300">
-                Tap any allergens below to filter dishes safely in real time
+                Filter by dietary lifestyle or tap allergens below to filter safely in real time
               </p>
             </div>
           </div>
@@ -159,8 +183,13 @@ export default function CustomerKiosk() {
           {/* Search & Filter Drawer Toggle */}
           <div className="flex items-center gap-2">
             <div className="relative flex-1 sm:w-60">
+              <label htmlFor="kiosk-search" className="sr-only">
+                Search menu
+              </label>
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
               <input
+                id="kiosk-search"
+                name="kioskSearch"
                 type="text"
                 placeholder="Search menu..."
                 value={searchQuery}
@@ -173,16 +202,16 @@ export default function CustomerKiosk() {
               type="button"
               onClick={() => setIsFilterDrawerOpen((prev) => !prev)}
               className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition ${
-                excludedAllergens.length > 0
+                activeFilterCount > 0
                   ? 'bg-amber-400 text-slate-950 border-amber-300'
                   : 'bg-slate-800 text-slate-200 border-slate-700 hover:bg-slate-700'
               }`}
             >
               <Filter className="w-4 h-4" />
-              Allergens
-              {excludedAllergens.length > 0 && (
+              Filters
+              {activeFilterCount > 0 && (
                 <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-slate-950 text-white font-extrabold">
-                  {excludedAllergens.length}
+                  {activeFilterCount}
                 </span>
               )}
             </button>
@@ -196,9 +225,44 @@ export default function CustomerKiosk() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 pt-5 space-y-6">
-        {/* Interactive Allergen Filter Panel */}
+        {/* Interactive Dietary & Allergen Filter Panel */}
         {isFilterDrawerOpen && (
           <section className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 sm:p-5 space-y-4">
+            {/* 1-Tap Dietary & Lifestyle Filter Bar */}
+            <div className="pb-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+                  <Leaf className="w-4 h-4 text-emerald-600" />
+                  Dietary &amp; Lifestyle Preferences (Tap to show only matching dishes)
+                </h2>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {DIETARY_BADGES.map((badge) => {
+                  const isActive = selectedDietaryTags.includes(badge.key);
+                  return (
+                    <button
+                      key={badge.key}
+                      type="button"
+                      onClick={() => toggleDietaryFilter(badge.key)}
+                      aria-pressed={isActive}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold border transition flex items-center gap-1.5 ${
+                        isActive
+                          ? `${badge.activeClass} shadow-xs ring-2 ring-emerald-200`
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span className="px-1.5 py-0.5 rounded bg-black/15 text-[10px] font-black">
+                        {badge.short}
+                      </span>
+                      <span>{badge.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Allergen Exclusion Header & Strict Mode Toggle */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-100">
               <div>
                 <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
@@ -206,13 +270,13 @@ export default function CustomerKiosk() {
                   Select Allergens to Avoid
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Tap the allergens you want to exclude from your menu view.
+                  Tap any of the 14 major allergens below to exclude them from your menu view.
                 </p>
               </div>
 
-              {/* Strict Mode ("May Contain") Toggle & Reset */}
               <div className="flex flex-wrap items-center gap-3">
                 <label
+                  htmlFor="kiosk-strict-mode"
                   className={`flex items-center gap-2.5 px-3.5 py-2 rounded-xl border text-xs font-bold cursor-pointer transition select-none ${
                     strictMode
                       ? 'bg-red-50 border-red-300 text-red-900'
@@ -220,6 +284,8 @@ export default function CustomerKiosk() {
                   }`}
                 >
                   <input
+                    id="kiosk-strict-mode"
+                    name="kioskStrictMode"
                     type="checkbox"
                     checked={strictMode}
                     onChange={(e) => setStrictMode(e.target.checked)}
@@ -236,14 +302,14 @@ export default function CustomerKiosk() {
                   </div>
                 </label>
 
-                {excludedAllergens.length > 0 && (
+                {activeFilterCount > 0 && (
                   <button
                     type="button"
                     onClick={clearAllFilters}
                     className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
-                    Reset ({excludedAllergens.length})
+                    Reset All ({activeFilterCount})
                   </button>
                 )}
               </div>
@@ -370,7 +436,7 @@ export default function CustomerKiosk() {
               No matching dishes found
             </h3>
             <p className="text-sm text-slate-500 max-w-md mx-auto">
-              No active dishes match your current allergen or category filters. Try disabling Strict Mode or clearing one of your filters.
+              No active dishes match your current dietary, allergen, or category filters. Try disabling Strict Mode or clearing one of your filters.
             </p>
             <button
               type="button"
@@ -390,6 +456,9 @@ export default function CustomerKiosk() {
               const mayContainAllergens = UK_ALLERGENS.filter(
                 (a) => dish.allergens?.[a.key] === 'May Contain'
               );
+              const activeDietaryBadges = DIETARY_BADGES.filter((b) =>
+                (dish.dietaryTags || []).includes(b.key)
+              );
 
               return (
                 <article
@@ -404,7 +473,6 @@ export default function CustomerKiosk() {
                   }`}
                 >
                   <div>
-                    {/* Optional Photo Header or Clean Category Header */}
                     {dish.photoUrl ? (
                       <div className="h-44 w-full bg-slate-200 relative overflow-hidden">
                         <img
@@ -429,13 +497,12 @@ export default function CustomerKiosk() {
                     )}
 
                     <div className="p-4 space-y-3">
-                      {/* Category & Suitability Status */}
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-600">
                           {dish.category}
                         </span>
 
-                        {excludedAllergens.length > 0 && !dish.isExcluded && (
+                        {activeFilterCount > 0 && !dish.isExcluded && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-bold">
                             <CheckCircle2 className="w-3 h-3" />
                             Matches Filter
@@ -443,7 +510,6 @@ export default function CustomerKiosk() {
                         )}
                       </div>
 
-                      {/* Dish Title & Price */}
                       <div className="flex items-start justify-between gap-3">
                         <h3 className="text-base font-extrabold text-slate-900 leading-snug">
                           {dish.name}
@@ -453,13 +519,24 @@ export default function CustomerKiosk() {
                         </span>
                       </div>
 
-                      {/* Calories Pill */}
-                      <div className="inline-flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 px-2.5 py-1 rounded-lg border border-orange-200/70">
-                        <Flame className="w-3.5 h-3.5" />
-                        {dish.totalCalories || 0} kcal
+                      {/* Calories & Dietary Lifestyle Badges Row */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-orange-700 bg-orange-50 px-2.5 py-1 rounded-lg border border-orange-200/70">
+                          <Flame className="w-3.5 h-3.5" />
+                          {dish.totalCalories || 0} kcal
+                        </span>
+
+                        {activeDietaryBadges.map((b) => (
+                          <span
+                            key={b.key}
+                            title={b.label}
+                            className={`px-2 py-1 rounded-lg text-xs font-extrabold border ${b.pillClass}`}
+                          >
+                            {b.short}
+                          </span>
+                        ))}
                       </div>
 
-                      {/* Conflict Warnings (when Strict Mode is OFF or Show Excluded is ON) */}
                       {dish.directConflicts.length > 0 && (
                         <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-xs text-red-900 font-bold flex items-start gap-2">
                           <Ban className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
@@ -480,7 +557,6 @@ export default function CustomerKiosk() {
                         </div>
                       )}
 
-                      {/* Full Dish Allergen Summary Pills */}
                       <div className="pt-2 border-t border-slate-100 space-y-1.5">
                         {presentAllergens.length === 0 &&
                         mayContainAllergens.length === 0 ? (
@@ -527,7 +603,6 @@ export default function CustomerKiosk() {
                     </div>
                   </div>
 
-                  {/* Card Footer */}
                   <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-indigo-600">
                     <span>View full ingredients (Natasha&apos;s Law)</span>
                     <Info className="w-4 h-4" />
@@ -557,12 +632,22 @@ export default function CustomerKiosk() {
                 <h2 className="text-xl font-extrabold text-slate-900 mt-0.5">
                   {selectedDish.name}
                 </h2>
-                <div className="flex items-center gap-3 mt-1 text-sm font-bold text-slate-700">
+                <div className="flex flex-wrap items-center gap-2 mt-1.5 text-sm font-bold text-slate-700">
                   <span>£{Number(selectedDish.retailPrice).toFixed(2)}</span>
                   <span>•</span>
                   <span className="text-orange-700">
                     {selectedDish.totalCalories || 0} kcal
                   </span>
+                  {DIETARY_BADGES.filter((b) =>
+                    (selectedDish.dietaryTags || []).includes(b.key)
+                  ).map((b) => (
+                    <span
+                      key={b.key}
+                      className={`px-2 py-0.5 rounded-lg text-xs font-extrabold border ${b.pillClass}`}
+                    >
+                      {b.short} ({b.label})
+                    </span>
+                  ))}
                 </div>
               </div>
 
@@ -575,7 +660,6 @@ export default function CustomerKiosk() {
               </button>
             </div>
 
-            {/* Out of Stock Alert inside Modal */}
             {selectedDish.hasOutOfStockIngredient && (
               <div className="p-3.5 rounded-xl bg-red-600 text-white text-xs font-bold flex items-center gap-2.5">
                 <AlertTriangle className="w-5 h-5 shrink-0" />
@@ -585,7 +669,6 @@ export default function CustomerKiosk() {
               </div>
             )}
 
-            {/* 14 Major Allergens Grid */}
             <div>
               <h3 className="text-xs font-bold uppercase text-slate-500 mb-2">
                 Allergen Profile (14 Major Allergens)
@@ -614,7 +697,6 @@ export default function CustomerKiosk() {
               </div>
             </div>
 
-            {/* Specific Gluten Cereal Breakdown */}
             <div>
               <h3 className="text-xs font-bold uppercase text-slate-500 mb-2">
                 Specific Gluten Cereal Tracing
@@ -641,7 +723,6 @@ export default function CustomerKiosk() {
               </div>
             </div>
 
-            {/* Natasha's Law (PPDS) Full Ingredient Declaration */}
             <div className="p-4 rounded-xl bg-amber-50/70 border border-amber-200 space-y-1.5">
               <div className="text-xs font-extrabold uppercase text-slate-800">
                 Full Ingredient Declaration (Natasha&apos;s Law / PPDS)
