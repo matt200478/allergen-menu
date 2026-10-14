@@ -1,5 +1,5 @@
 // src/App.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Routes, Route, Link } from 'react-router-dom';
 import {
   onAuthStateChanged,
@@ -13,6 +13,9 @@ import {
   orderBy,
   limit,
   onSnapshot,
+  doc,
+  writeBatch,
+  serverTimestamp,
 } from 'firebase/firestore';
 import { auth, db } from './firebase/config';
 
@@ -38,6 +41,9 @@ import {
   Copy,
   Check,
   X,
+  Trash2,
+  TrendingUp,
+  AlertTriangle,
 } from 'lucide-react';
 
 export default function App() {
@@ -160,11 +166,17 @@ function ManagerLogin() {
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+            <label
+              htmlFor="login-email"
+              className="block text-xs font-bold uppercase text-slate-600 mb-1"
+            >
               Manager Email
             </label>
             <input
+              id="login-email"
+              name="email"
               type="email"
+              autoComplete="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -175,7 +187,10 @@ function ManagerLogin() {
 
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs font-bold uppercase text-slate-600">
+              <label
+                htmlFor="login-password"
+                className="block text-xs font-bold uppercase text-slate-600"
+              >
                 Password
               </label>
               <button
@@ -188,7 +203,10 @@ function ManagerLogin() {
               </button>
             </div>
             <input
+              id="login-password"
+              name="password"
               type="password"
+              autoComplete="current-password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -227,15 +245,25 @@ function ManagerDashboard({ user }) {
   const [activeTab, setActiveTab] = useState('INGREDIENTS');
   const [editingDish, setEditingDish] = useState(null);
   const [dishes, setDishes] = useState([]);
+  const [ingredients, setIngredients] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
 
+  // Subscribe to Dishes, Ingredients (for live Matrix GP% calculation), and Audit Logs
   useEffect(() => {
     const unsubDishes = onSnapshot(collection(db, 'dishes'), (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => a.name.localeCompare(b.name));
       setDishes(list);
     });
+
+    const unsubIngredients = onSnapshot(
+      collection(db, 'ingredients'),
+      (snap) => {
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setIngredients(list);
+      }
+    );
 
     const qAudit = query(
       collection(db, 'audit_logs'),
@@ -248,6 +276,7 @@ function ManagerDashboard({ user }) {
 
     return () => {
       unsubDishes();
+      unsubIngredients();
       unsubAudit();
     };
   }, []);
@@ -257,9 +286,48 @@ function ManagerDashboard({ user }) {
     setActiveTab('DISH_BUILDER');
   };
 
+  // Clone an existing dish into DishBuilder without an ID so saving creates a new dish
+  const handleDuplicateDish = (dish) => {
+    const clonedDish = {
+      ...dish,
+      id: null,
+      name: `${dish.name} (Copy)`,
+    };
+    setEditingDish(clonedDish);
+    setActiveTab('DISH_BUILDER');
+  };
+
   const handleCreateNewDish = () => {
     setEditingDish(null);
     setActiveTab('DISH_BUILDER');
+  };
+
+  // Delete a dish and record an audit log entry
+  const handleDeleteDish = async (dish) => {
+    if (
+      !window.confirm(
+        `Are you sure you want to permanently delete "${dish.name}" from the menu?`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      const batch = writeBatch(db);
+      batch.delete(doc(db, 'dishes', dish.id));
+
+      const auditRef = doc(collection(db, 'audit_logs'));
+      batch.set(auditRef, {
+        timestamp: serverTimestamp(),
+        action: `Deleted dish "${dish.name}" from menu`,
+        userId: auth.currentUser?.uid || 'manager-session',
+      });
+
+      await batch.commit();
+    } catch (error) {
+      console.error('Error deleting dish:', error);
+      alert(`Failed to delete dish: ${error.message}`);
+    }
   };
 
   return (
@@ -371,7 +439,7 @@ function ManagerDashboard({ user }) {
 
         {activeTab === 'DISH_BUILDER' && (
           <DishBuilder
-            key={editingDish?.id || 'new-dish'}
+            key={editingDish?.id || editingDish?.name || 'new-dish'}
             existingDish={editingDish}
             onSaveSuccess={() => setActiveTab('MATRIX')}
           />
@@ -380,7 +448,10 @@ function ManagerDashboard({ user }) {
         {activeTab === 'MATRIX' && (
           <PrintableAllergenMatrix
             dishes={dishes}
+            ingredients={ingredients}
             onEditDish={handleEditDish}
+            onDuplicateDish={handleDuplicateDish}
+            onDeleteDish={handleDeleteDish}
             onCreateNewDish={handleCreateNewDish}
           />
         )}
@@ -389,9 +460,7 @@ function ManagerDashboard({ user }) {
       </main>
 
       {/* Printable QR Code Generator Modal */}
-      {isQrModalOpen && (
-        <QrCodeModal onClose={() => setIsQrModalOpen(false)} />
-      )}
+      {isQrModalOpen && <QrCodeModal onClose={() => setIsQrModalOpen(false)} />}
     </div>
   );
 }
@@ -462,11 +531,16 @@ function QrCodeModal({ onClose }) {
           {/* Configuration Controls */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
             <div className="sm:col-span-2">
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+              <label
+                htmlFor="qr-kiosk-url"
+                className="block text-xs font-bold uppercase text-slate-600 mb-1"
+              >
                 Target Kiosk URL
               </label>
               <div className="flex gap-2">
                 <input
+                  id="qr-kiosk-url"
+                  name="qrKioskUrl"
                   type="url"
                   value={kioskUrl}
                   onChange={(e) => setKioskUrl(e.target.value)}
@@ -493,10 +567,15 @@ function QrCodeModal({ onClose }) {
             </div>
 
             <div>
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+              <label
+                htmlFor="qr-headline"
+                className="block text-xs font-bold uppercase text-slate-600 mb-1"
+              >
                 Sticker Headline
               </label>
               <input
+                id="qr-headline"
+                name="qrHeadline"
                 type="text"
                 value={headline}
                 onChange={(e) => setHeadline(e.target.value)}
@@ -505,10 +584,15 @@ function QrCodeModal({ onClose }) {
             </div>
 
             <div>
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+              <label
+                htmlFor="qr-location-badge"
+                className="block text-xs font-bold uppercase text-slate-600 mb-1"
+              >
                 Venue / Zone Badge
               </label>
               <input
+                id="qr-location-badge"
+                name="qrLocationBadge"
                 type="text"
                 value={locationBadge}
                 onChange={(e) => setLocationBadge(e.target.value)}
@@ -518,10 +602,15 @@ function QrCodeModal({ onClose }) {
             </div>
 
             <div className="sm:col-span-2">
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+              <label
+                htmlFor="qr-subtext"
+                className="block text-xs font-bold uppercase text-slate-600 mb-1"
+              >
                 Call-to-Action Subtext
               </label>
               <input
+                id="qr-subtext"
+                name="qrSubtext"
                 type="text"
                 value={subtext}
                 onChange={(e) => setSubtext(e.target.value)}
@@ -642,22 +731,96 @@ function QrCodeModal({ onClose }) {
 }
 
 /* ============================================================================
- * FEATURE 4: A4 PRINTABLE ALLERGEN MATRIX & DISH DIRECTORY
+ * FEATURE 4: A4 PRINTABLE ALLERGEN MATRIX, LIVE GP% & 1-CLICK DISH CLONING
  * ========================================================================== */
-function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
+function PrintableAllergenMatrix({
+  dishes,
+  ingredients,
+  onEditDish,
+  onDuplicateDish,
+  onDeleteDish,
+  onCreateNewDish,
+}) {
+  const [deductVat, setDeductVat] = useState(false);
+
+  // Build O(1) lookup map of live ingredients so Matrix calculates real-time cost & GP%
+  const ingredientMap = useMemo(() => {
+    const map = {};
+    (ingredients || []).forEach((ing) => {
+      map[ing.id] = ing;
+    });
+    return map;
+  }, [ingredients]);
+
+  // Compute live portion cost and GP% for every dish
+  const enrichedDishes = useMemo(() => {
+    return dishes.map((dish) => {
+      let liveCost = 0;
+      (dish.components || []).forEach((comp) => {
+        const ing = ingredientMap[comp.ingredientId];
+        const weight = parseFloat(comp.weightGrams) || 0;
+        if (ing && weight > 0) {
+          const costPerGram =
+            (Number(ing.costPerPack) || 0) /
+            (Number(ing.packWeightGrams) || 1);
+          liveCost += costPerGram * weight;
+        }
+      });
+
+      const retail = parseFloat(dish.retailPrice) || 0;
+      const effectiveRev = deductVat ? retail / 1.2 : retail;
+      const gpPercent =
+        effectiveRev > 0 ? ((effectiveRev - liveCost) / effectiveRev) * 100 : 0;
+
+      return {
+        ...dish,
+        liveCost,
+        gpPercent,
+      };
+    });
+  }, [dishes, ingredientMap, deductVat]);
+
+  // Summary Margin KPIs across the menu
+  const menuStats = useMemo(() => {
+    if (enrichedDishes.length === 0) return { avgGp: 0, lowGpCount: 0 };
+    const totalGp = enrichedDishes.reduce((acc, d) => acc + d.gpPercent, 0);
+    const lowGpCount = enrichedDishes.filter((d) => d.gpPercent < 70).length;
+    return {
+      avgGp: totalGp / enrichedDishes.length,
+      lowGpCount,
+    };
+  }, [enrichedDishes]);
+
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 no-print">
+      {/* Screen Controls & Live Margin Bar (Hidden on A4 Print) */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-200 no-print">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900">
-            Printable A4 Allergen Matrix &amp; Active Menu
+            Menu Profitability &amp; A4 Allergen Matrix
           </h1>
           <p className="text-sm text-slate-600">
-            Standard 14-allergen grid formatted for A4 landscape printing. Click any dish to edit its recipe.
+            Live GP% margin tracking, 1-click dish cloning, and A4 landscape allergen printing.
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* VAT Toggle for Matrix GP% Column */}
+          <label
+            htmlFor="matrix-vat-toggle"
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-slate-300 text-xs font-bold text-slate-700 cursor-pointer"
+          >
+            <input
+              id="matrix-vat-toggle"
+              name="matrixVatToggle"
+              type="checkbox"
+              checked={deductVat}
+              onChange={(e) => setDeductVat(e.target.checked)}
+              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+            />
+            Deduct 20% VAT on GP%
+          </label>
+
           <button
             type="button"
             onClick={onCreateNewDish}
@@ -678,6 +841,66 @@ function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
         </div>
       </div>
 
+      {/* Live Menu Margin KPI Strip (Hidden on Print) */}
+      {enrichedDishes.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 no-print">
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
+            <div>
+              <div className="text-xs font-bold uppercase text-slate-500">
+                Active Menu Dishes
+              </div>
+              <div className="text-2xl font-extrabold text-slate-900 mt-0.5">
+                {enrichedDishes.length}
+              </div>
+            </div>
+            <Utensils className="w-8 h-8 text-slate-300" />
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
+            <div>
+              <div className="text-xs font-bold uppercase text-slate-500">
+                Average Menu GP% ({deductVat ? 'Net ex-VAT' : 'Gross'})
+              </div>
+              <div
+                className={`text-2xl font-extrabold mt-0.5 ${
+                  menuStats.avgGp >= 70
+                    ? 'text-emerald-600'
+                    : 'text-amber-600'
+                }`}
+              >
+                {menuStats.avgGp.toFixed(1)}%
+              </div>
+            </div>
+            <TrendingUp className="w-8 h-8 text-emerald-500/40" />
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
+            <div>
+              <div className="text-xs font-bold uppercase text-slate-500">
+                Dishes Below 70% GP Target
+              </div>
+              <div
+                className={`text-2xl font-extrabold mt-0.5 ${
+                  menuStats.lowGpCount > 0
+                    ? 'text-red-600'
+                    : 'text-emerald-600'
+                }`}
+              >
+                {menuStats.lowGpCount}
+              </div>
+            </div>
+            <AlertTriangle
+              className={`w-8 h-8 ${
+                menuStats.lowGpCount > 0
+                  ? 'text-red-500/50'
+                  : 'text-slate-200'
+              }`}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Printable Matrix Card */}
       <div className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-slate-200 overflow-x-auto">
         <div className="mb-4 flex items-center justify-between border-b border-slate-200 pb-3">
           <div>
@@ -690,7 +913,7 @@ function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
           </div>
         </div>
 
-        {dishes.length === 0 ? (
+        {enrichedDishes.length === 0 ? (
           <div className="py-12 text-center text-sm text-slate-500">
             No dishes created yet. Use the Dish Builder tab to create your first menu item.
           </div>
@@ -698,8 +921,16 @@ function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
           <table className="w-full border-collapse text-left text-[11px]">
             <thead>
               <tr className="bg-slate-900 text-white">
-                <th className="p-2 border border-slate-700 font-bold">Menu Item</th>
-                <th className="p-2 border border-slate-700 font-bold text-center">kcal</th>
+                <th className="p-2 border border-slate-700 font-bold">
+                  Menu Item
+                </th>
+                <th className="p-2 border border-slate-700 font-bold text-center">
+                  kcal
+                </th>
+                {/* Manager-Only Live Cost & GP% Column (Hidden on A4 Print) */}
+                <th className="p-2 border border-slate-700 font-bold text-center no-print bg-indigo-950">
+                  Cost / GP%
+                </th>
                 {UK_ALLERGENS.map((a) => (
                   <th
                     key={a.key}
@@ -709,17 +940,24 @@ function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
                   </th>
                 ))}
                 <th className="p-2 border border-slate-700 text-center no-print">
-                  Edit
+                  Actions
                 </th>
               </tr>
             </thead>
             <tbody>
-              {dishes.map((dish) => {
+              {enrichedDishes.map((dish) => {
                 const activeCereals = GLUTEN_CEREALS.filter(
                   (c) =>
                     dish.allergens?.[c.key] === 'Yes' ||
                     dish.allergens?.[c.key] === 'May Contain'
                 ).map((c) => c.label);
+
+                const gpBadgeColour =
+                  dish.gpPercent >= 70
+                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                    : dish.gpPercent >= 60
+                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                    : 'bg-red-100 text-red-800 border-red-300';
 
                 return (
                   <tr
@@ -729,6 +967,11 @@ function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
                     <td className="p-2 border border-slate-300 font-bold text-slate-900">
                       <div className="flex items-center gap-1.5">
                         <span>{dish.name}</span>
+                        {!dish.isActive && (
+                          <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[9px] font-bold uppercase no-print">
+                            Hidden
+                          </span>
+                        )}
                         {dish.hasOutOfStockIngredient && (
                           <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black uppercase no-print">
                             OOS
@@ -736,12 +979,25 @@ function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
                         )}
                       </div>
                       <div className="text-[10px] font-normal text-slate-500">
-                        {dish.category} • £{Number(dish.retailPrice).toFixed(2)}
+                        {dish.category} • Retail: £
+                        {Number(dish.retailPrice).toFixed(2)}
                       </div>
                     </td>
 
                     <td className="p-2 border border-slate-300 text-center font-semibold">
                       {dish.totalCalories || 0}
+                    </td>
+
+                    {/* Live Cost & GP% Cell (Hidden on Print) */}
+                    <td className="p-2 border border-slate-300 text-center no-print">
+                      <div className="font-bold text-slate-800">
+                        £{dish.liveCost.toFixed(2)}
+                      </div>
+                      <span
+                        className={`inline-block mt-0.5 px-1.5 py-0.5 rounded border text-[10px] font-extrabold ${gpBadgeColour}`}
+                      >
+                        {dish.gpPercent.toFixed(1)}% GP
+                      </span>
                     </td>
 
                     {UK_ALLERGENS.map((a) => {
@@ -773,15 +1029,36 @@ function PrintableAllergenMatrix({ dishes, onEditDish, onCreateNewDish }) {
                       );
                     })}
 
+                    {/* Edit, Duplicate (Clone), and Delete Actions (Hidden on Print) */}
                     <td className="p-2 border border-slate-300 text-center no-print">
-                      <button
-                        type="button"
-                        onClick={() => onEditDish(dish)}
-                        className="p-1.5 rounded-lg text-indigo-600 hover:bg-indigo-50"
-                        title="Edit Dish"
-                      >
-                        <Edit3 className="w-4 h-4 mx-auto" />
-                      </button>
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => onEditDish(dish)}
+                          className="p-1.5 rounded-lg text-indigo-600 hover:bg-indigo-50 transition"
+                          title="Edit Dish"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => onDuplicateDish(dish)}
+                          className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 transition"
+                          title="Duplicate / Clone Dish into Dish Builder"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => onDeleteDish(dish)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition"
+                          title="Delete Dish"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
