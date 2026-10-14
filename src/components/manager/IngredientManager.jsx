@@ -69,7 +69,6 @@ const FALSE_POSITIVE_PHRASES = [
   'cream of tartar',
   'coconut milk',
   'coconut cream',
-  'oat milk', // 'oat' will still be caught if not stripped, so we only strip 'milk' false positives:
   'lactic acid',
   'calcium lactate',
   'sodium lactate',
@@ -84,7 +83,10 @@ const FALSE_POSITIVE_PHRASES = [
 // Keyword dictionary mapped to each allergen and gluten cereal key
 const ALLERGEN_DETECTION_MAP = {
   // 4 Specific Gluten Cereals
-  wheat: ['wheat', 'spelt', 'kamut', 'khorasan', 'durum', 'semolina', 'couscous', 'bulgur', 'farro', 'triticale'],
+  wheat: [
+    'wheat', 'spelt', 'kamut', 'khorasan', 'durum', 'semolina',
+    'couscous', 'bulgur', 'farro', 'triticale',
+  ],
   barley: ['barley', 'malt extract', 'malted'],
   rye: ['rye'],
   oats: ['oat', 'oats', 'oatmeal'],
@@ -116,7 +118,7 @@ const ALLERGEN_DETECTION_MAP = {
     'caseinates', 'lactose', 'lactoglobulin', 'lactalbumin', 'buttermilk',
     'yoghurt', 'yogurt', 'ghee', 'paneer', 'curd', 'curds', 'mozzarella',
     'cheddar', 'parmesan', 'gouda', 'edam', 'brie', 'stilton', 'mascarpone',
-    'ricotta', 'halloumi', 'feta', 'Monterey Jack', 'dairy',
+    'ricotta', 'halloumi', 'feta', 'monterey jack', 'dairy',
   ],
   molluscs: [
     'mollusc', 'molluscs', 'mollusk', 'mollusks', 'mussel', 'mussels',
@@ -372,14 +374,14 @@ export default function IngredientManager() {
   // Handle typing or pasting into the Supplier Sub-Ingredients textarea
   const handleIngredientListChange = (newText) => {
     setFormData((prev) => {
-      // Optionally strip a leading "Product Name: " prefix if the user pasted e.g. "Sausage Rolls: Water, Wheat..."
-      letupdatedProductName = prev.productName;
+      let updatedProductName = prev.productName;
       let cleanedText = newText;
 
+      // Auto-extract leading "Product Name: " if pasted e.g. "Sausage Rolls: Water, Wheat..."
       if (!prev.productName.trim() && newText.includes(':')) {
         const colonIndex = newText.indexOf(':');
         if (colonIndex > 2 && colonIndex < 50) {
-          letupdatedProductName = newText.slice(0, colonIndex).trim();
+          updatedProductName = newText.slice(0, colonIndex).trim();
           cleanedText = newText.slice(colonIndex + 1).trim();
         }
       }
@@ -390,7 +392,7 @@ export default function IngredientManager() {
 
       return {
         ...prev,
-        productName: letupdatedProductName,
+        productName: updatedProductName,
         ingredientList: cleanedText,
         allergens: nextAllergens,
       };
@@ -736,7 +738,6 @@ export default function IngredientManager() {
           const idx = getColIndex(key);
           if (idx !== -1 && row[idx] !== undefined && row[idx].trim() !== '') {
             const explicitVal = normaliseAllergenValue(row[idx]);
-            // If CSV explicitly says Yes or May Contain, apply it; if auto-detector found Yes/May and CSV cell was left blank, keep auto-detected
             if (explicitVal === 'Yes' || explicitVal === 'May Contain') {
               allergens[key] = explicitVal;
             }
@@ -931,6 +932,8 @@ export default function IngredientManager() {
 
         <div className="flex flex-wrap items-center gap-2.5">
           <input
+            id="csv-file-upload"
+            name="csvFileUpload"
             ref={fileInputRef}
             type="file"
             accept=".csv,text/csv"
@@ -1011,6 +1014,7 @@ export default function IngredientManager() {
             <span>{feedback.text}</span>
           </div>
           <button
+            type="button"
             onClick={() => setFeedback(null)}
             className="text-xs font-bold underline ml-4 shrink-0"
           >
@@ -1022,9 +1026,15 @@ export default function IngredientManager() {
       {/* Search & Stock Filter Bar */}
       <div className="mt-6 flex flex-col sm:flex-row gap-3 items-center justify-between">
         <div className="relative w-full sm:w-96">
+          <label htmlFor="ingredient-search" className="sr-only">
+            Search ingredients
+          </label>
           <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
           <input
+            id="ingredient-search"
+            name="ingredientSearch"
             type="text"
+            autoComplete="off"
             placeholder="Search by ingredient, supplier, or code..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -1224,14 +1234,22 @@ export default function IngredientManager() {
               {/* Supplier Sub-Ingredients List placed FIRST so pasting can auto-fill Product Name & Allergens */}
               <div className="p-4 rounded-2xl bg-indigo-50/60 border border-indigo-200 space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <label className="text-xs font-extrabold uppercase text-indigo-950 flex items-center gap-1.5">
+                  <label
+                    htmlFor="ingredient-list"
+                    className="text-xs font-extrabold uppercase text-indigo-950 flex items-center gap-1.5"
+                  >
                     <Sparkles className="w-4 h-4 text-indigo-600" />
                     Paste Supplier Ingredients List (Auto-Detects Allergens) *
                   </label>
 
                   <div className="flex items-center gap-3">
-                    <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-900 cursor-pointer">
+                    <label
+                      htmlFor="auto-detect-allergens"
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-900 cursor-pointer"
+                    >
                       <input
+                        id="auto-detect-allergens"
+                        name="autoDetectAllergens"
                         type="checkbox"
                         checked={autoDetectEnabled}
                         onChange={(e) => setAutoDetectEnabled(e.target.checked)}
@@ -1253,6 +1271,8 @@ export default function IngredientManager() {
                 </div>
 
                 <textarea
+                  id="ingredient-list"
+                  name="ingredientList"
                   rows={3}
                   required
                   placeholder="Paste directly from spec sheet, e.g.: Sausage Rolls: Water, Wheat Flour, Pork (9%), Rusk (Wheat Flour), Glaze (Water, Wheat Protein)... May also contain Barley, Eggs, Milk, Mustard and Oats."
@@ -1296,11 +1316,17 @@ export default function IngredientManager() {
               {/* Product Metadata Inputs */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="sm:col-span-2">
-                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  <label
+                    htmlFor="product-name"
+                    className="block text-xs font-bold uppercase text-slate-600 mb-1"
+                  >
                     Product Name *
                   </label>
                   <input
+                    id="product-name"
+                    name="productName"
                     type="text"
+                    autoComplete="off"
                     required
                     placeholder="e.g. Sausage Rolls"
                     value={formData.productName}
@@ -1312,11 +1338,17 @@ export default function IngredientManager() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  <label
+                    htmlFor="supplier-name"
+                    className="block text-xs font-bold uppercase text-slate-600 mb-1"
+                  >
                     Supplier *
                   </label>
                   <input
+                    id="supplier-name"
+                    name="supplier"
                     type="text"
+                    autoComplete="organization"
                     required
                     placeholder="e.g. Brakes / Bidfood"
                     value={formData.supplier}
@@ -1328,11 +1360,17 @@ export default function IngredientManager() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  <label
+                    htmlFor="supplier-code"
+                    className="block text-xs font-bold uppercase text-slate-600 mb-1"
+                  >
                     Supplier Code *
                   </label>
                   <input
+                    id="supplier-code"
+                    name="supplierCode"
                     type="text"
+                    autoComplete="off"
                     required
                     value={formData.supplierCode}
                     onChange={(e) =>
@@ -1343,10 +1381,15 @@ export default function IngredientManager() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  <label
+                    htmlFor="cost-per-pack"
+                    className="block text-xs font-bold uppercase text-slate-600 mb-1"
+                  >
                     Cost Per Pack (£) *
                   </label>
                   <input
+                    id="cost-per-pack"
+                    name="costPerPack"
                     type="number"
                     step="0.01"
                     required
@@ -1359,10 +1402,15 @@ export default function IngredientManager() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  <label
+                    htmlFor="pack-weight-grams"
+                    className="block text-xs font-bold uppercase text-slate-600 mb-1"
+                  >
                     Pack Weight (Grams) *
                   </label>
                   <input
+                    id="pack-weight-grams"
+                    name="packWeightGrams"
                     type="number"
                     step="1"
                     required
@@ -1378,10 +1426,15 @@ export default function IngredientManager() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  <label
+                    htmlFor="calories-per-100g"
+                    className="block text-xs font-bold uppercase text-slate-600 mb-1"
+                  >
                     Calories per 100g (kcal) *
                   </label>
                   <input
+                    id="calories-per-100g"
+                    name="caloriesPer100g"
                     type="number"
                     step="1"
                     required
@@ -1399,9 +1452,9 @@ export default function IngredientManager() {
 
               {/* 14 Major Allergens Interactive Tap Grid */}
               <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-2">
+                <div className="block text-xs font-bold uppercase text-slate-600 mb-2">
                   14 Major Allergens (Pre-selected from text — tap any pill to adjust: No → May Contain → Yes)
-                </label>
+                </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {UK_ALLERGENS.map((allergen) => {
                     const status = formData.allergens[allergen.key] || 'No';
@@ -1430,9 +1483,9 @@ export default function IngredientManager() {
 
               {/* Specific Cereal Sub-Tracing */}
               <div className="pt-2 border-t border-slate-200">
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-2">
+                <div className="block text-xs font-bold uppercase text-slate-600 mb-2">
                   Specific Cereal Tracing (Wheat, Barley, Rye, Oats)
-                </label>
+                </div>
                 <div className="grid grid-cols-4 gap-2">
                   {GLUTEN_CEREALS.map((cereal) => {
                     const status = formData.allergens[cereal.key] || 'No';
