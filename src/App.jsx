@@ -27,6 +27,9 @@ import DishBuilder, {
 import IngredientManager, {
   evaluateEhoReviewStatus,
 } from './components/manager/IngredientManager';
+import AdminSettings, {
+  DEFAULT_VENUE_SETTINGS,
+} from './components/manager/AdminSettings';
 import CustomerKiosk from './components/kiosk/CustomerKiosk';
 
 import {
@@ -47,6 +50,10 @@ import {
   Trash2,
   TrendingUp,
   AlertTriangle,
+  Settings,
+  UserCheck,
+  Download,
+  Search,
 } from 'lucide-react';
 
 export default function App() {
@@ -241,6 +248,8 @@ function ManagerDashboard({ user }) {
   const [dishes, setDishes] = useState([]);
   const [ingredients, setIngredients] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
+  const [usersList, setUsersList] = useState([]);
+  const [venueSettings, setVenueSettings] = useState(DEFAULT_VENUE_SETTINGS);
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
 
   useEffect(() => {
@@ -261,20 +270,48 @@ function ManagerDashboard({ user }) {
     const qAudit = query(
       collection(db, 'audit_logs'),
       orderBy('timestamp', 'desc'),
-      limit(50)
+      limit(100)
     );
     const unsubAudit = onSnapshot(qAudit, (snap) => {
       setAuditLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) =>
+        (a.displayName || '').localeCompare(b.displayName || '')
+      );
+      setUsersList(list);
+    });
+
+    const unsubSettings = onSnapshot(doc(db, 'settings', 'general'), (snap) => {
+      if (snap.exists()) {
+        setVenueSettings({ ...DEFAULT_VENUE_SETTINGS, ...snap.data() });
+      }
     });
 
     return () => {
       unsubDishes();
       unsubIngredients();
       unsubAudit();
+      unsubUsers();
+      unsubSettings();
     };
   }, []);
 
-  // Count overdue/due-soon EHO specs for navbar badge
+  // Build O(1) lookup map: UID -> { displayName, role, email }
+  const userMap = useMemo(() => {
+    const map = {};
+    usersList.forEach((u) => {
+      map[u.id] = u;
+    });
+    return map;
+  }, [usersList]);
+
+  const currentStaffProfile = userMap[user.uid];
+  const currentDisplayName =
+    currentStaffProfile?.displayName || user.displayName || user.email;
+
   const ehoAlertCount = useMemo(() => {
     return ingredients.filter((ing) => {
       const { status } = evaluateEhoReviewStatus(ing.lastVerifiedDate);
@@ -320,6 +357,7 @@ function ManagerDashboard({ user }) {
         timestamp: serverTimestamp(),
         action: `Deleted dish "${dish.name}" from menu`,
         userId: auth.currentUser?.uid || 'manager-session',
+        userName: currentDisplayName,
       });
 
       await batch.commit();
@@ -339,11 +377,17 @@ function ManagerDashboard({ user }) {
             </div>
             <div>
               <span className="font-extrabold tracking-tight text-base">
-                Menu &amp; Allergen Control
+                {venueSettings.venueName || 'Menu & Allergen Control'}
               </span>
-              <span className="hidden sm:inline-block ml-2 text-xs text-slate-400">
-                ({user.email})
-              </span>
+              <button
+                type="button"
+                onClick={() => setActiveTab('SETTINGS')}
+                className="hidden sm:inline-flex items-center gap-1 ml-2.5 px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-indigo-300 font-semibold transition"
+                title="Click to edit your display name"
+              >
+                <UserCheck className="w-3 h-3" />
+                <span>{currentDisplayName}</span>
+              </button>
             </div>
           </div>
 
@@ -362,7 +406,7 @@ function ManagerDashboard({ user }) {
               {ehoAlertCount > 0 && (
                 <span
                   className="px-1.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black"
-                  title={`${ehoAlertCount} ingredient spec(s) due for 90-day EHO review`}
+                  title={`${ehoAlertCount} ingredient spec(s) due for EHO review`}
                 >
                   {ehoAlertCount}
                 </span>
@@ -410,6 +454,19 @@ function ManagerDashboard({ user }) {
 
             <button
               type="button"
+              onClick={() => setActiveTab('SETTINGS')}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition ${
+                activeTab === 'SETTINGS'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <Settings className="w-4 h-4" />
+              Settings &amp; Users
+            </button>
+
+            <button
+              type="button"
               onClick={() => setIsQrModalOpen(true)}
               className="px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center gap-1.5 ml-1 shadow-xs transition"
             >
@@ -453,6 +510,7 @@ function ManagerDashboard({ user }) {
           <PrintableAllergenMatrix
             dishes={dishes}
             ingredients={ingredients}
+            venueSettings={venueSettings}
             onEditDish={handleEditDish}
             onDuplicateDish={handleDuplicateDish}
             onDeleteDish={handleDeleteDish}
@@ -460,7 +518,24 @@ function ManagerDashboard({ user }) {
           />
         )}
 
-        {activeTab === 'AUDIT' && <AuditLogViewer logs={auditLogs} />}
+        {activeTab === 'AUDIT' && (
+          <AuditLogViewer
+            logs={auditLogs}
+            userMap={userMap}
+            onOpenSettings={() => setActiveTab('SETTINGS')}
+          />
+        )}
+
+        {activeTab === 'SETTINGS' && (
+          <AdminSettings
+            currentUser={user}
+            usersList={usersList}
+            venueSettings={venueSettings}
+            auditLogs={auditLogs}
+            ingredients={ingredients}
+            dishes={dishes}
+          />
+        )}
       </main>
 
       {isQrModalOpen && <QrCodeModal onClose={() => setIsQrModalOpen(false)} />}
@@ -729,12 +804,15 @@ function QrCodeModal({ onClose }) {
 function PrintableAllergenMatrix({
   dishes,
   ingredients,
+  venueSettings = DEFAULT_VENUE_SETTINGS,
   onEditDish,
   onDuplicateDish,
   onDeleteDish,
   onCreateNewDish,
 }) {
   const [deductVat, setDeductVat] = useState(false);
+  const targetGp = Number(venueSettings?.targetGpPercentage) || 70;
+  const vatDivisor = 1 + (Number(venueSettings?.vatPercentage) || 20) / 100;
 
   const ingredientMap = useMemo(() => {
     const map = {};
@@ -759,7 +837,7 @@ function PrintableAllergenMatrix({
       });
 
       const retail = parseFloat(dish.retailPrice) || 0;
-      const effectiveRev = deductVat ? retail / 1.2 : retail;
+      const effectiveRev = deductVat ? retail / vatDivisor : retail;
       const gpPercent =
         effectiveRev > 0 ? ((effectiveRev - liveCost) / effectiveRev) * 100 : 0;
 
@@ -769,17 +847,19 @@ function PrintableAllergenMatrix({
         gpPercent,
       };
     });
-  }, [dishes, ingredientMap, deductVat]);
+  }, [dishes, ingredientMap, deductVat, vatDivisor]);
 
   const menuStats = useMemo(() => {
     if (enrichedDishes.length === 0) return { avgGp: 0, lowGpCount: 0 };
     const totalGp = enrichedDishes.reduce((acc, d) => acc + d.gpPercent, 0);
-    const lowGpCount = enrichedDishes.filter((d) => d.gpPercent < 70).length;
+    const lowGpCount = enrichedDishes.filter(
+      (d) => d.gpPercent < targetGp
+    ).length;
     return {
       avgGp: totalGp / enrichedDishes.length,
       lowGpCount,
     };
-  }, [enrichedDishes]);
+  }, [enrichedDishes, targetGp]);
 
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
@@ -789,7 +869,7 @@ function PrintableAllergenMatrix({
             Menu Profitability &amp; A4 Allergen Matrix
           </h1>
           <p className="text-sm text-slate-600">
-            Live GP% margin tracking, dietary tags, 1-click dish cloning, and A4 landscape allergen printing.
+            Live GP% margin tracking (Target: {targetGp}%), dietary tags, 1-click dish cloning, and A4 landscape allergen printing.
           </p>
         </div>
 
@@ -806,7 +886,7 @@ function PrintableAllergenMatrix({
               onChange={(e) => setDeductVat(e.target.checked)}
               className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
             />
-            Deduct 20% VAT on GP%
+            Deduct {venueSettings?.vatPercentage || 20}% VAT on GP%
           </label>
 
           <button
@@ -850,7 +930,7 @@ function PrintableAllergenMatrix({
               </div>
               <div
                 className={`text-2xl font-extrabold mt-0.5 ${
-                  menuStats.avgGp >= 70
+                  menuStats.avgGp >= targetGp
                     ? 'text-emerald-600'
                     : 'text-amber-600'
                 }`}
@@ -864,7 +944,7 @@ function PrintableAllergenMatrix({
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
             <div>
               <div className="text-xs font-bold uppercase text-slate-500">
-                Dishes Below 70% GP Target
+                Dishes Below {targetGp}% GP Target
               </div>
               <div
                 className={`text-2xl font-extrabold mt-0.5 ${
@@ -891,7 +971,9 @@ function PrintableAllergenMatrix({
         <div className="mb-4 flex items-center justify-between border-b border-slate-200 pb-3">
           <div>
             <h2 className="text-lg font-black uppercase tracking-tight text-slate-900">
-              Official Food &amp; Beverage Allergen Matrix (14 Major Allergens)
+              {venueSettings?.venueName
+                ? `${venueSettings.venueName} — Official Allergen Matrix`
+                : 'Official Food & Beverage Allergen Matrix (14 Major Allergens)'}
             </h2>
             <p className="text-xs text-slate-500">
               Generated: {new Date().toLocaleDateString('en-GB')} • Key: YES = Contains Allergen | MAY = May Contain Traces | - = Not Present
@@ -942,9 +1024,9 @@ function PrintableAllergenMatrix({
                 );
 
                 const gpBadgeColour =
-                  dish.gpPercent >= 70
+                  dish.gpPercent >= targetGp
                     ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                    : dish.gpPercent >= 60
+                    : dish.gpPercent >= targetGp - 10
                     ? 'bg-amber-100 text-amber-900 border-amber-300'
                     : 'bg-red-100 text-red-800 border-red-300';
 
@@ -1066,37 +1148,191 @@ function PrintableAllergenMatrix({
   );
 }
 
-function AuditLogViewer({ logs }) {
+/* ============================================================================
+ * UPGRADED AUDIT LOG VIEWER (Resolves Staff Names, Roles, Search & CSV Export)
+ * ========================================================================== */
+function AuditLogViewer({ logs, userMap = {}, onOpenSettings }) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedUserFilter, setSelectedUserFilter] = useState('ALL');
+
+  // Helper to resolve any UID (including historical entries like PpVTL9cP) to a staff name
+  const resolveLogStaff = (log) => {
+    const mapped = userMap[log.userId];
+    if (mapped?.displayName) {
+      return {
+        name: mapped.displayName,
+        role: mapped.role || 'Manager',
+        isMapped: true,
+      };
+    }
+    if (log.userName) {
+      return {
+        name: log.userName,
+        role: 'Manager',
+        isMapped: true,
+      };
+    }
+    return {
+      name: `UID: ${log.userId?.slice(0, 8) || 'System'}`,
+      role: null,
+      isMapped: false,
+    };
+  };
+
+  const filteredLogs = useMemo(() => {
+    return logs.filter((log) => {
+      const staff = resolveLogStaff(log);
+      const matchesUser =
+        selectedUserFilter === 'ALL' || log.userId === selectedUserFilter;
+      const matchesSearch =
+        !searchQuery.trim() ||
+        log.action?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        staff.name.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchesUser && matchesSearch;
+    });
+  }, [logs, userMap, searchQuery, selectedUserFilter]);
+
+  const handleExportAuditCsv = () => {
+    if (filteredLogs.length === 0) return;
+    const rows = ['Timestamp,Staff Name,Role,Action,UID'];
+    filteredLogs.forEach((log) => {
+      const dateStr = log.timestamp?.toDate
+        ? log.timestamp.toDate().toLocaleString('en-GB')
+        : 'Just now';
+      const staff = resolveLogStaff(log);
+      const safeAction = `"${(log.action || '').replace(/"/g, '""')}"`;
+      rows.push(
+        `"${dateStr}","${staff.name}","${staff.role || ''}",${safeAction},"${
+          log.userId || ''
+        }"`
+      );
+    });
+
+    const blob = new Blob([rows.join('\r\n')], {
+      type: 'text/csv;charset=utf-8;',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute(
+      'download',
+      `fec-audit-trail-${new Date().toISOString().slice(0, 10)}.csv`
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-4">
-      <div>
-        <h1 className="text-2xl font-extrabold text-slate-900">
-          System Audit Trail
-        </h1>
-        <p className="text-sm text-slate-600">
-          Immutable log of all ingredient allergen updates, EHO 90-day spec verifications, stock changes, and recipe edits.
-        </p>
+    <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-extrabold text-slate-900">
+            System Audit Trail
+          </h1>
+          <p className="text-sm text-slate-600">
+            Immutable log of all ingredient allergen updates, EHO 90-day spec verifications, stock changes, and recipe edits.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="px-3.5 py-2 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-xs font-bold text-slate-700"
+          >
+            Manage Staff Names
+          </button>
+          <button
+            type="button"
+            onClick={handleExportAuditCsv}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export Audit CSV
+          </button>
+        </div>
       </div>
 
+      {/* Search & Staff Filter Bar */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <label htmlFor="audit-search" className="sr-only">
+            Search audit logs
+          </label>
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-2.5" />
+          <input
+            id="audit-search"
+            name="auditSearch"
+            type="text"
+            placeholder="Search audit actions or staff name..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-2 rounded-xl border border-slate-300 bg-white text-xs font-medium"
+          />
+        </div>
+
+        <select
+          id="audit-staff-filter"
+          name="auditStaffFilter"
+          value={selectedUserFilter}
+          onChange={(e) => setSelectedUserFilter(e.target.value)}
+          className="px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-xs font-bold text-slate-700"
+        >
+          <option value="ALL">All Staff Members</option>
+          {Object.values(userMap).map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.displayName} ({u.role || 'Manager'})
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Audit Entries List */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 divide-y divide-slate-200">
-        {logs.length === 0 ? (
+        {filteredLogs.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500">
-            No audit events recorded yet.
+            No matching audit events found.
           </div>
         ) : (
-          logs.map((log) => {
+          filteredLogs.map((log) => {
             const dateStr = log.timestamp?.toDate
               ? log.timestamp.toDate().toLocaleString('en-GB')
               : 'Just now';
+            const staff = resolveLogStaff(log);
 
             return (
               <div
                 key={log.id}
-                className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm"
+                className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm hover:bg-slate-50/80"
               >
                 <div className="font-semibold text-slate-800">{log.action}</div>
-                <div className="text-xs text-slate-500 font-mono shrink-0">
-                  {dateStr} • UID: {log.userId?.slice(0, 8)}
+
+                <div className="flex flex-wrap items-center gap-2 text-xs shrink-0">
+                  <span className="text-slate-500 font-mono">{dateStr}</span>
+                  <span className="text-slate-300">•</span>
+
+                  {staff.isMapped ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-900 border border-indigo-200 font-bold">
+                      <UserCheck className="w-3 h-3 text-indigo-600" />
+                      <span>{staff.name}</span>
+                      {staff.role && (
+                        <span className="text-[10px] font-normal text-indigo-600">
+                          ({staff.role})
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={onOpenSettings}
+                      className="px-2.5 py-0.5 rounded-full bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 font-mono font-bold transition"
+                      title="Click to assign a staff name to this UID in Settings"
+                    >
+                      {staff.name} (Click to name)
+                    </button>
+                  )}
                 </div>
               </div>
             );
