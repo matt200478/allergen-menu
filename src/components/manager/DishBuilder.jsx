@@ -28,6 +28,7 @@ import {
   Search,
   ChevronDown,
   UtensilsCrossed,
+  Leaf,
 } from 'lucide-react';
 
 // UK 14 Major Allergens Configuration
@@ -53,6 +54,45 @@ export const GLUTEN_CEREALS = [
   { key: 'barley', label: 'Barley' },
   { key: 'rye', label: 'Rye' },
   { key: 'oats', label: 'Oats' },
+];
+
+// Dietary & Lifestyle Badges Configuration for Kiosk & Printable Matrix
+export const DIETARY_BADGES = [
+  {
+    key: 'V',
+    short: 'V',
+    label: 'Vegetarian',
+    activeClass: 'bg-emerald-600 text-white border-emerald-700',
+    pillClass: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+  },
+  {
+    key: 'VE',
+    short: 'VE',
+    label: 'Vegan',
+    activeClass: 'bg-green-700 text-white border-green-800',
+    pillClass: 'bg-green-100 text-green-900 border-green-300',
+  },
+  {
+    key: 'GF',
+    short: 'GF',
+    label: 'Gluten-Free',
+    activeClass: 'bg-amber-500 text-slate-950 border-amber-600',
+    pillClass: 'bg-amber-100 text-amber-900 border-amber-300',
+  },
+  {
+    key: 'DF',
+    short: 'DF',
+    label: 'Dairy-Free',
+    activeClass: 'bg-sky-600 text-white border-sky-700',
+    pillClass: 'bg-sky-100 text-sky-900 border-sky-300',
+  },
+  {
+    key: 'HALAL',
+    short: 'Halal',
+    label: 'Halal',
+    activeClass: 'bg-teal-700 text-white border-teal-800',
+    pillClass: 'bg-teal-100 text-teal-900 border-teal-300',
+  },
 ];
 
 // Comprehensive keyword list for Natasha's Law (PPDS) automatic bolding & capitalisation
@@ -154,7 +194,6 @@ function SearchableIngredientSelect({
 
   const selectedIngredient = ingredientMap[selectedId];
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (containerRef.current && !containerRef.current.contains(e.target)) {
@@ -165,20 +204,17 @@ function SearchableIngredientSelect({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Focus search input automatically when opened
   useEffect(() => {
     if (isOpen && searchInputRef.current) {
       searchInputRef.current.focus();
     }
   }, [isOpen]);
 
-  // Unique suppliers for quick filter pill inside dropdown
   const suppliers = useMemo(() => {
     const set = new Set(ingredients.map((i) => i.supplier).filter(Boolean));
     return ['ALL', ...Array.from(set)];
   }, [ingredients]);
 
-  // Filtered ingredients based on search term and supplier pill
   const filteredOptions = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
     return ingredients.filter((ing) => {
@@ -195,7 +231,6 @@ function SearchableIngredientSelect({
 
   return (
     <div ref={containerRef} className="relative">
-      {/* Trigger Button */}
       <button
         id={`ingredient-select-btn-${rowIndex}`}
         type="button"
@@ -228,10 +263,8 @@ function SearchableIngredientSelect({
         <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
       </button>
 
-      {/* Searchable Popover Panel */}
       {isOpen && (
         <div className="absolute z-40 left-0 right-0 mt-1.5 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
-          {/* Search Input Bar */}
           <div className="p-2.5 bg-slate-50 border-b border-slate-200 space-y-2">
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
@@ -257,7 +290,6 @@ function SearchableIngredientSelect({
               )}
             </div>
 
-            {/* Supplier Filter Pills (if multiple suppliers exist) */}
             {suppliers.length > 2 && (
               <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar">
                 {suppliers.map((sup) => (
@@ -278,7 +310,6 @@ function SearchableIngredientSelect({
             )}
           </div>
 
-          {/* Filtered Ingredient Results List */}
           <div className="max-h-60 overflow-y-auto divide-y divide-slate-100">
             {filteredOptions.length === 0 ? (
               <div className="p-4 text-center text-xs text-slate-500">
@@ -346,7 +377,6 @@ function SearchableIngredientSelect({
  * MAIN DISH BUILDER COMPONENT
  * ========================================================================== */
 export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
-  // Firestore Ingredients State
   const [ingredients, setIngredients] = useState([]);
   const [loadingIngredients, setLoadingIngredients] = useState(true);
 
@@ -358,19 +388,24 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
   const [retailPrice, setRetailPrice] = useState(existingDish?.retailPrice || '');
   const [isActive, setIsActive] = useState(existingDish?.isActive ?? true);
+
+  // Dietary & Lifestyle Badges State ('V', 'VE', 'GF', 'DF', 'HALAL')
+  const [dietaryTags, setDietaryTags] = useState(existingDish?.dietaryTags || []);
+
+  // Recipe Components State (includes persistent qty and unitWeightGrams for Portion Multiplier)
   const [components, setComponents] = useState(
-    existingDish?.components || [{ ingredientId: '', weightGrams: '' }]
+    existingDish?.components?.map((c) => ({
+      ingredientId: c.ingredientId || '',
+      qty: c.qty ?? '',
+      unitWeightGrams: c.unitWeightGrams ?? '',
+      weightGrams: c.weightGrams ?? '',
+    })) || [{ ingredientId: '', qty: '', unitWeightGrams: '', weightGrams: '' }]
   );
 
   // Kitchen Cross-Contamination (e.g. Shared Fryer / Grill traces)
   const [crossContamAllergens, setCrossContamAllergens] = useState(
     existingDish?.crossContamAllergens || []
   );
-
-  // Optional Per-Row Multiplier Helper (Qty x Unit Grams)
-  const [activeMultiplierRow, setActiveMultiplierRow] = useState(null);
-  const [multQty, setMultQty] = useState('');
-  const [multUnitGrams, setMultUnitGrams] = useState('');
 
   // UI & Accounting Helpers
   const [includeVatInGp, setIncludeVatInGp] = useState(false);
@@ -402,7 +437,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     return () => unsubscribe();
   }, []);
 
-  // Quick lookup map for O(1) ingredient retrieval
   const ingredientMap = useMemo(() => {
     const map = {};
     ingredients.forEach((ing) => {
@@ -443,42 +477,53 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     }
   };
 
-  // Component Row Handlers
+  // Toggle Dietary & Lifestyle Badge
+  const toggleDietaryTag = (tagKey) => {
+    setDietaryTags((prev) =>
+      prev.includes(tagKey)
+        ? prev.filter((k) => k !== tagKey)
+        : [...prev, tagKey]
+    );
+  };
+
+  // Component Row Handlers (including automatic Qty × Unit Weight multiplication)
   const handleAddComponent = () => {
-    setComponents((prev) => [...prev, { ingredientId: '', weightGrams: '' }]);
+    setComponents((prev) => [
+      ...prev,
+      { ingredientId: '', qty: '', unitWeightGrams: '', weightGrams: '' },
+    ]);
   };
 
   const handleRemoveComponent = (index) => {
     setComponents((prev) => prev.filter((_, idx) => idx !== index));
   };
 
-  const handleComponentChange = (index, field, value) => {
+  const handleComponentChange = (index, field, rawValue) => {
     setComponents((prev) =>
-      prev.map((comp, idx) =>
-        idx === index
-          ? {
-              ...comp,
-              [field]:
-                field === 'weightGrams'
-                  ? value === ''
-                    ? ''
-                    : Number(value)
-                  : value,
-            }
-          : comp
-      )
-    );
-  };
+      prev.map((comp, idx) => {
+        if (idx !== index) return comp;
 
-  // Apply Qty x Unit Weight helper to a component row
-  const applyMultiplierToRow = (index) => {
-    const total = (parseFloat(multQty) || 0) * (parseFloat(multUnitGrams) || 0);
-    if (total > 0) {
-      handleComponentChange(index, 'weightGrams', Math.round(total * 10) / 10);
-    }
-    setActiveMultiplierRow(null);
-    setMultQty('');
-    setMultUnitGrams('');
+        const updated = { ...comp, [field]: rawValue };
+
+        // If manager edits Qty or Unit (g), automatically calculate Total Weight (g)
+        if (field === 'qty' || field === 'unitWeightGrams') {
+          const q = parseFloat(field === 'qty' ? rawValue : comp.qty);
+          const u = parseFloat(
+            field === 'unitWeightGrams' ? rawValue : comp.unitWeightGrams
+          );
+          if (!Number.isNaN(q) && q > 0 && !Number.isNaN(u) && u > 0) {
+            updated.weightGrams = Math.round(q * u * 10) / 10;
+          }
+        }
+
+        // If manager edits Total Weight directly, clear Qty/Unit only if they don't match
+        if (field === 'weightGrams') {
+          updated.weightGrams = rawValue === '' ? '' : Number(rawValue);
+        }
+
+        return updated;
+      })
+    );
   };
 
   // Toggle Shared Fryer / Prep Surface Cross-Contamination allergen
@@ -557,7 +602,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       });
     });
 
-    // Apply Kitchen Cross-Contamination (Shared Fryer / Grill) as "May Contain" if not already "Yes"
     crossContamAllergens.forEach((key) => {
       aggregatedAllergens[key] = mergeAllergenState(
         aggregatedAllergens[key],
@@ -571,7 +615,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       }
     });
 
-    // Gross Profit (GP%) Calculation
     const priceNum = parseFloat(retailPrice) || 0;
     const effectiveRevenue = includeVatInGp ? priceNum / 1.2 : priceNum;
     const grossProfit = effectiveRevenue - totalCost;
@@ -580,7 +623,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
         ? ((effectiveRevenue - totalCost) / effectiveRevenue) * 100
         : 0;
 
-    // Natasha's Law (PPDS) Composite String Generation
     const sortedForPpds = [...validComponents].sort(
       (a, b) => b.weight - a.weight
     );
@@ -605,6 +647,39 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
 
     const ppdsFormatted = formatPPDSString(rawCompositeIngredients);
 
+    // Smart Dietary Badge Conflict Guard
+    const dietaryConflicts = [];
+    if (dietaryTags.includes('GF') && aggregatedAllergens.gluten !== 'No') {
+      dietaryConflicts.push(
+        `Tagged "Gluten-Free (GF)", but recipe has Gluten (${aggregatedAllergens.gluten}).`
+      );
+    }
+    if (dietaryTags.includes('DF') && aggregatedAllergens.milk !== 'No') {
+      dietaryConflicts.push(
+        `Tagged "Dairy-Free (DF)", but recipe has Milk (${aggregatedAllergens.milk}).`
+      );
+    }
+    if (dietaryTags.includes('VE')) {
+      const nonVeganAllergens = ['milk', 'eggs', 'fish', 'crustaceans', 'molluscs'].filter(
+        (k) => aggregatedAllergens[k] === 'Yes'
+      );
+      if (nonVeganAllergens.length > 0) {
+        dietaryConflicts.push(
+          `Tagged "Vegan (VE)", but recipe contains ${nonVeganAllergens.join(', ').toUpperCase()}.`
+        );
+      }
+    }
+    if (dietaryTags.includes('V')) {
+      const nonVegAllergens = ['fish', 'crustaceans', 'molluscs'].filter(
+        (k) => aggregatedAllergens[k] === 'Yes'
+      );
+      if (nonVegAllergens.length > 0) {
+        dietaryConflicts.push(
+          `Tagged "Vegetarian (V)", but recipe contains ${nonVegAllergens.join(', ').toUpperCase()}.`
+        );
+      }
+    }
+
     return {
       totalCalories: Math.round(totalCalories),
       totalCost,
@@ -615,6 +690,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       aggregatedAllergens,
       outOfStockItems,
       ppdsFormatted,
+      dietaryConflicts,
     };
   }, [
     components,
@@ -622,6 +698,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     retailPrice,
     includeVatInGp,
     crossContamAllergens,
+    dietaryTags,
   ]);
 
   const handleCopyPpds = () => {
@@ -662,8 +739,12 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
         category,
         photoUrl: photoUrl.trim() || null,
         retailPrice: parseFloat(retailPrice),
+        dietaryTags,
         components: cleanedComponents.map((c) => ({
           ingredientId: c.ingredientId,
+          qty: c.qty !== '' ? Number(c.qty) : null,
+          unitWeightGrams:
+            c.unitWeightGrams !== '' ? Number(c.unitWeightGrams) : null,
           weightGrams: Number(c.weightGrams),
         })),
         crossContamAllergens,
@@ -728,12 +809,12 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900">
-            {existingDish
+            {existingDish?.id
               ? `Edit Dish: ${existingDish.name}`
               : 'Dish Builder & Margin Calculator'}
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Build recipes with searchable ingredients, live GP% margin tracking, and Natasha&apos;s Law (PPDS) compliance.
+            Build recipes with Qty × Unit Weight calculation, dietary badges, live GP%, and Natasha&apos;s Law compliance.
           </p>
         </div>
 
@@ -776,6 +857,23 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
         </div>
       )}
 
+      {/* Dietary Badge Conflict Guard Banner */}
+      {metrics.dietaryConflicts.length > 0 && (
+        <div className="mt-6 p-4 rounded-xl bg-amber-50 border-2 border-amber-500 flex items-start gap-3">
+          <AlertTriangle className="w-6 h-6 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <h3 className="text-sm font-bold text-amber-950 uppercase tracking-wide">
+              Dietary Badge &amp; Allergen Conflict Warning
+            </h3>
+            <ul className="text-xs font-semibold text-amber-900 mt-1 list-disc list-inside space-y-0.5">
+              {metrics.dietaryConflicts.map((msg, i) => (
+                <li key={i}>{msg}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {/* Status Alert */}
       {statusMessage && (
         <div
@@ -797,10 +895,10 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       <form onSubmit={handleSaveDish} className="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* LEFT COLUMN: Dish Details & Ingredient Builder (7 Cols) */}
         <div className="lg:col-span-7 space-y-6">
-          {/* Card 1: Dish Metadata & Photo Upload */}
+          {/* Card 1: Dish Metadata, Dietary Badges & Photo Upload */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
             <h2 className="text-lg font-bold text-slate-800">
-              1. Dish Details &amp; Photo
+              1. Dish Details, Dietary Badges &amp; Photo
             </h2>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -868,6 +966,36 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                     onChange={(e) => setRetailPrice(e.target.value)}
                     className="w-full pl-8 pr-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600 text-sm font-bold"
                   />
+                </div>
+              </div>
+
+              {/* Dietary & Lifestyle Kiosk Badges Selector */}
+              <div className="sm:col-span-2 pt-2 border-t border-slate-100">
+                <div className="flex items-center gap-1.5 text-xs font-bold uppercase text-slate-600 mb-2">
+                  <Leaf className="w-4 h-4 text-emerald-600" />
+                  Dietary &amp; Lifestyle Kiosk Badges (1-Tap Customer Filters)
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {DIETARY_BADGES.map((badge) => {
+                    const isSelected = dietaryTags.includes(badge.key);
+                    return (
+                      <button
+                        key={badge.key}
+                        type="button"
+                        onClick={() => toggleDietaryTag(badge.key)}
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition flex items-center gap-1.5 ${
+                          isSelected
+                            ? `${badge.activeClass} shadow-xs`
+                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        <span className="px-1.5 py-0.5 rounded bg-black/15 text-[10px] font-black">
+                          {badge.short}
+                        </span>
+                        <span>{badge.label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -981,15 +1109,15 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
             </div>
           </div>
 
-          {/* Card 2: Searchable Recipe Components Builder */}
+          {/* Card 2: Searchable Recipe Components with Inline Qty × Unit Weight Calculator */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">
-                  2. Recipe Components (Searchable)
+                  2. Recipe Components &amp; Portion Multiplier
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Search by ingredient name, supplier, or code and enter portion weight in grams.
+                  Enter <strong>Qty × Unit (g)</strong> (e.g. 3 goujons × 45g) to auto-calculate total grams, or type directly into <strong>Total (g)</strong>.
                 </p>
               </div>
               <button
@@ -1026,15 +1154,15 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                   return (
                     <div
                       key={index}
-                      className={`p-3.5 rounded-xl border transition ${
+                      className={`p-3.5 rounded-xl border transition space-y-3 ${
                         isOos
                           ? 'bg-red-50/70 border-red-300'
                           : 'bg-slate-50 border-slate-200'
                       }`}
                     >
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
-                        {/* Searchable Ingredient Combobox (6 Cols) */}
-                        <div className="sm:col-span-6">
+                      {/* Top Row: Searchable Ingredient Selector + Live Cost/kcal + Remove */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex-1">
                           <div className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
                             Ingredient #{index + 1}{' '}
                             {isOos && (
@@ -1052,56 +1180,12 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                           />
                         </div>
 
-                        {/* Weight Input in Grams + Multiplier Helper (3 Cols) */}
-                        <div className="sm:col-span-3">
-                          <div className="flex items-center justify-between mb-1">
-                            <label
-                              htmlFor={`portion-weight-${index}`}
-                              className="block text-[11px] font-bold uppercase text-slate-500"
-                            >
-                              Portion (g)
-                            </label>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setActiveMultiplierRow(
-                                  activeMultiplierRow === index ? null : index
-                                )
-                              }
-                              className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5"
-                              title="Calculate weight from Qty × Unit grams"
-                            >
-                              <Calculator className="w-3 h-3" />
-                              Qty×g
-                            </button>
-                          </div>
-                          <input
-                            id={`portion-weight-${index}`}
-                            name={`portionWeight_${index}`}
-                            type="number"
-                            min="0.1"
-                            step="0.1"
-                            required
-                            placeholder="e.g. 120"
-                            value={comp.weightGrams}
-                            onChange={(e) =>
-                              handleComponentChange(
-                                index,
-                                'weightGrams',
-                                e.target.value
-                              )
-                            }
-                            className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-bold focus:ring-2 focus:ring-indigo-600"
-                          />
-                        </div>
-
-                        {/* Live Row Metrics & Delete Button (3 Cols) */}
-                        <div className="sm:col-span-3 flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-4">
-                          <div className="text-right">
-                            <div className="text-xs font-bold text-slate-800">
+                        <div className="flex items-center justify-between sm:justify-end gap-3 pt-1 sm:pt-4 shrink-0">
+                          <div className="text-right bg-white px-3 py-1.5 rounded-lg border border-slate-200">
+                            <div className="text-xs font-extrabold text-slate-900">
                               £{rowCost.toFixed(2)}
                             </div>
-                            <div className="text-[11px] text-slate-500">
+                            <div className="text-[10px] font-semibold text-orange-700">
                               {rowCalories} kcal
                             </div>
                           </div>
@@ -1118,45 +1202,91 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                         </div>
                       </div>
 
-                      {/* Expandable Qty × Unit Weight Mini-Calculator */}
-                      {activeMultiplierRow === index && (
-                        <div className="mt-2.5 pt-2.5 border-t border-slate-200 flex flex-wrap items-center gap-2 text-xs">
-                          <span className="font-bold text-slate-600">
-                            Quick Multiply:
-                          </span>
-                          <input
-                            id={`mult-qty-${index}`}
-                            name={`multQty_${index}`}
-                            type="number"
-                            step="0.5"
-                            placeholder="Qty (e.g. 3)"
-                            value={multQty}
-                            onChange={(e) => setMultQty(e.target.value)}
-                            className="w-24 px-2.5 py-1 rounded-lg border border-slate-300 bg-white font-semibold"
-                          />
-                          <span>×</span>
-                          <input
-                            id={`mult-unit-${index}`}
-                            name={`multUnit_${index}`}
-                            type="number"
-                            step="1"
-                            placeholder="Unit g (e.g. 45)"
-                            value={multUnitGrams}
-                            onChange={(e) => setMultUnitGrams(e.target.value)}
-                            className="w-28 px-2.5 py-1 rounded-lg border border-slate-300 bg-white font-semibold"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => applyMultiplierToRow(index)}
-                            className="px-3 py-1 rounded-lg bg-indigo-600 text-white font-bold"
+                      {/* Bottom Row: Inline Portion Multiplier Calculator (Qty × Unit g = Total g) */}
+                      <div className="grid grid-cols-12 gap-2 items-center pt-2 border-t border-slate-200/80">
+                        <div className="col-span-3 sm:col-span-3">
+                          <label
+                            htmlFor={`comp-qty-${index}`}
+                            className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5"
                           >
-                            Apply{' '}
-                            {multQty && multUnitGrams
-                              ? `(${Math.round(multQty * multUnitGrams)}g)`
-                              : ''}
-                          </button>
+                            Qty (Opt)
+                          </label>
+                          <input
+                            id={`comp-qty-${index}`}
+                            name={`compQty_${index}`}
+                            type="number"
+                            min="0"
+                            step="0.5"
+                            placeholder="e.g. 3"
+                            value={comp.qty}
+                            onChange={(e) =>
+                              handleComponentChange(index, 'qty', e.target.value)
+                            }
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold focus:ring-2 focus:ring-indigo-600"
+                          />
                         </div>
-                      )}
+
+                        <div className="col-span-1 text-center pt-4 text-xs font-black text-slate-400">
+                          ×
+                        </div>
+
+                        <div className="col-span-3 sm:col-span-3">
+                          <label
+                            htmlFor={`comp-unit-weight-${index}`}
+                            className="block text-[10px] font-bold uppercase text-slate-500 mb-0.5"
+                          >
+                            Unit (g)
+                          </label>
+                          <input
+                            id={`comp-unit-weight-${index}`}
+                            name={`compUnitWeight_${index}`}
+                            type="number"
+                            min="0"
+                            step="0.1"
+                            placeholder="e.g. 45"
+                            value={comp.unitWeightGrams}
+                            onChange={(e) =>
+                              handleComponentChange(
+                                index,
+                                'unitWeightGrams',
+                                e.target.value
+                              )
+                            }
+                            className="w-full px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold focus:ring-2 focus:ring-indigo-600"
+                          />
+                        </div>
+
+                        <div className="col-span-1 text-center pt-4 text-xs font-black text-slate-400">
+                          =
+                        </div>
+
+                        <div className="col-span-4 sm:col-span-4">
+                          <label
+                            htmlFor={`portion-weight-${index}`}
+                            className="block text-[10px] font-extrabold uppercase text-indigo-700 mb-0.5"
+                          >
+                            Total Portion (g) *
+                          </label>
+                          <input
+                            id={`portion-weight-${index}`}
+                            name={`portionWeight_${index}`}
+                            type="number"
+                            min="0.1"
+                            step="0.1"
+                            required
+                            placeholder="e.g. 135"
+                            value={comp.weightGrams}
+                            onChange={(e) =>
+                              handleComponentChange(
+                                index,
+                                'weightGrams',
+                                e.target.value
+                              )
+                            }
+                            className="w-full px-2.5 py-1.5 rounded-lg border-2 border-indigo-300 bg-white text-xs font-extrabold text-slate-900 focus:ring-2 focus:ring-indigo-600"
+                          />
+                        </div>
+                      </div>
                     </div>
                   );
                 })}
@@ -1388,7 +1518,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
             <Save className="w-5 h-5" />
             {isSaving
               ? 'Saving Dish & Recording Audit Log...'
-              : existingDish
+              : existingDish?.id
               ? 'Update Dish & Log Audit Trail'
               : 'Save Dish to Menu'}
           </button>
