@@ -25,6 +25,9 @@ import {
   Image as ImageIcon,
   Link as LinkIcon,
   X,
+  Search,
+  ChevronDown,
+  UtensilsCrossed,
 } from 'lucide-react';
 
 // UK 14 Major Allergens Configuration
@@ -71,16 +74,11 @@ const ALLERGEN_KEYWORDS = [
   'molluscs', 'mollusc', 'mussel', 'mussels', 'oyster', 'oysters', 'squid', 'calamari', 'clam', 'clams', 'scallop', 'scallops'
 ];
 
-// Build Regex that matches whole allergen words (case-insensitive)
 const ALLERGEN_REGEX = new RegExp(
   `\\b(${ALLERGEN_KEYWORDS.sort((a, b) => b.length - a.length).join('|')})\\b`,
   'gi'
 );
 
-/**
- * Formats an ingredient list string to comply with Natasha's Law (PPDS).
- * Converts recognised allergens to UPPERCASE and wraps them in <strong> tags.
- */
 export const formatPPDSString = (rawText) => {
   if (!rawText) return { html: '', plainText: '' };
 
@@ -93,10 +91,6 @@ export const formatPPDSString = (rawText) => {
   return { html, plainText };
 };
 
-/**
- * Client-side HTML5 Canvas image resizer & compressor.
- * Turns a 5MB+ phone/camera photo into a ~45KB optimised JPEG Data URL.
- */
 const compressImageFile = (file, maxWidth = 800, maxHeight = 600, quality = 0.78) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -119,7 +113,6 @@ const compressImageFile = (file, maxWidth = 800, maxHeight = 600, quality = 0.78
         canvas.height = height;
 
         const ctx = canvas.getContext('2d');
-        // Fill white background for transparent PNGs converted to JPEG
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
@@ -143,6 +136,215 @@ const CATEGORIES = [
   'Hot & Cold Drinks',
 ];
 
+/* ============================================================================
+ * SEARCHABLE INGREDIENT COMBOBOX SUB-COMPONENT
+ * ========================================================================== */
+function SearchableIngredientSelect({
+  rowIndex,
+  selectedId,
+  ingredients,
+  ingredientMap,
+  onSelect,
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [supplierFilter, setSupplierFilter] = useState('ALL');
+  const containerRef = useRef(null);
+  const searchInputRef = useRef(null);
+
+  const selectedIngredient = ingredientMap[selectedId];
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Focus search input automatically when opened
+  useEffect(() => {
+    if (isOpen && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [isOpen]);
+
+  // Unique suppliers for quick filter pill inside dropdown
+  const suppliers = useMemo(() => {
+    const set = new Set(ingredients.map((i) => i.supplier).filter(Boolean));
+    return ['ALL', ...Array.from(set)];
+  }, [ingredients]);
+
+  // Filtered ingredients based on search term and supplier pill
+  const filteredOptions = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return ingredients.filter((ing) => {
+      const matchesSupplier =
+        supplierFilter === 'ALL' || ing.supplier === supplierFilter;
+      const matchesQuery =
+        !q ||
+        ing.productName?.toLowerCase().includes(q) ||
+        ing.supplierCode?.toLowerCase().includes(q) ||
+        ing.supplier?.toLowerCase().includes(q);
+      return matchesSupplier && matchesQuery;
+    });
+  }, [ingredients, searchTerm, supplierFilter]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      {/* Trigger Button */}
+      <button
+        id={`ingredient-select-btn-${rowIndex}`}
+        type="button"
+        onClick={() => setIsOpen((prev) => !prev)}
+        className={`w-full px-3 py-2 rounded-lg border text-left text-sm flex items-center justify-between gap-2 bg-white transition ${
+          isOpen
+            ? 'border-indigo-600 ring-2 ring-indigo-600'
+            : 'border-slate-300 hover:border-slate-400'
+        }`}
+      >
+        {selectedIngredient ? (
+          <div className="truncate">
+            <span className="font-bold text-slate-900">
+              {selectedIngredient.inStock === false && (
+                <span className="text-red-600 mr-1">[OOS]</span>
+              )}
+              {selectedIngredient.productName}
+            </span>
+            <span className="text-xs text-slate-500 ml-1.5">
+              ({selectedIngredient.supplier} • £
+              {Number(selectedIngredient.costPerPack).toFixed(2)} /{' '}
+              {selectedIngredient.packWeightGrams}g)
+            </span>
+          </div>
+        ) : (
+          <span className="text-slate-400 font-medium">
+            Search or select ingredient...
+          </span>
+        )}
+        <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+      </button>
+
+      {/* Searchable Popover Panel */}
+      {isOpen && (
+        <div className="absolute z-40 left-0 right-0 mt-1.5 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
+          {/* Search Input Bar */}
+          <div className="p-2.5 bg-slate-50 border-b border-slate-200 space-y-2">
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              <input
+                ref={searchInputRef}
+                id={`ingredient-search-input-${rowIndex}`}
+                name={`ingredientSearchInput_${rowIndex}`}
+                type="text"
+                autoComplete="off"
+                placeholder="Type name, supplier, or code (e.g. Brioche, BRK)..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-8 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-600"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Supplier Filter Pills (if multiple suppliers exist) */}
+            {suppliers.length > 2 && (
+              <div className="flex items-center gap-1 overflow-x-auto pb-0.5 no-scrollbar">
+                {suppliers.map((sup) => (
+                  <button
+                    key={sup}
+                    type="button"
+                    onClick={() => setSupplierFilter(sup)}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-bold whitespace-nowrap transition ${
+                      supplierFilter === sup
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    {sup === 'ALL' ? 'All Suppliers' : sup}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Filtered Ingredient Results List */}
+          <div className="max-h-60 overflow-y-auto divide-y divide-slate-100">
+            {filteredOptions.length === 0 ? (
+              <div className="p-4 text-center text-xs text-slate-500">
+                No ingredients matching &ldquo;{searchTerm}&rdquo;
+              </div>
+            ) : (
+              filteredOptions.map((ing) => {
+                const isSelected = ing.id === selectedId;
+                const costPer100g =
+                  ((Number(ing.costPerPack) || 0) /
+                    (Number(ing.packWeightGrams) || 1)) *
+                  100;
+
+                return (
+                  <button
+                    key={ing.id}
+                    type="button"
+                    onClick={() => {
+                      onSelect(ing.id);
+                      setIsOpen(false);
+                      setSearchTerm('');
+                    }}
+                    className={`w-full px-3.5 py-2.5 text-left flex items-center justify-between gap-2 transition ${
+                      isSelected
+                        ? 'bg-indigo-50 text-indigo-950 font-bold'
+                        : 'hover:bg-slate-50 text-slate-800'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold truncate flex items-center gap-1.5">
+                        {ing.inStock === false && (
+                          <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black uppercase">
+                            OOS
+                          </span>
+                        )}
+                        <span>{ing.productName}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 truncate">
+                        {ing.supplier} • Code:{' '}
+                        <span className="font-mono">{ing.supplierCode}</span> •{' '}
+                        {ing.caloriesPer100g} kcal/100g
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <div className="text-xs font-bold text-slate-900">
+                        £{Number(ing.costPerPack).toFixed(2)}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        {ing.packWeightGrams}g (£{costPer100g.toFixed(2)}/100g)
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
+ * MAIN DISH BUILDER COMPONENT
+ * ========================================================================== */
 export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   // Firestore Ingredients State
   const [ingredients, setIngredients] = useState([]);
@@ -152,13 +354,23 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   const [dishName, setDishName] = useState(existingDish?.name || '');
   const [category, setCategory] = useState(existingDish?.category || CATEGORIES[0]);
   const [photoUrl, setPhotoUrl] = useState(existingDish?.photoUrl || '');
-  const [photoMode, setPhotoMode] = useState('UPLOAD'); // 'UPLOAD' | 'URL'
+  const [photoMode, setPhotoMode] = useState('UPLOAD');
   const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
   const [retailPrice, setRetailPrice] = useState(existingDish?.retailPrice || '');
   const [isActive, setIsActive] = useState(existingDish?.isActive ?? true);
   const [components, setComponents] = useState(
     existingDish?.components || [{ ingredientId: '', weightGrams: '' }]
   );
+
+  // Kitchen Cross-Contamination (e.g. Shared Fryer / Grill traces)
+  const [crossContamAllergens, setCrossContamAllergens] = useState(
+    existingDish?.crossContamAllergens || []
+  );
+
+  // Optional Per-Row Multiplier Helper (Qty x Unit Grams)
+  const [activeMultiplierRow, setActiveMultiplierRow] = useState(null);
+  const [multQty, setMultQty] = useState('');
+  const [multUnitGrams, setMultUnitGrams] = useState('');
 
   // UI & Accounting Helpers
   const [includeVatInGp, setIncludeVatInGp] = useState(false);
@@ -246,10 +458,33 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
         idx === index
           ? {
               ...comp,
-              [field]: field === 'weightGrams' ? (value === '' ? '' : Number(value)) : value,
+              [field]:
+                field === 'weightGrams'
+                  ? value === ''
+                    ? ''
+                    : Number(value)
+                  : value,
             }
           : comp
       )
+    );
+  };
+
+  // Apply Qty x Unit Weight helper to a component row
+  const applyMultiplierToRow = (index) => {
+    const total = (parseFloat(multQty) || 0) * (parseFloat(multUnitGrams) || 0);
+    if (total > 0) {
+      handleComponentChange(index, 'weightGrams', Math.round(total * 10) / 10);
+    }
+    setActiveMultiplierRow(null);
+    setMultQty('');
+    setMultUnitGrams('');
+  };
+
+  // Toggle Shared Fryer / Prep Surface Cross-Contamination allergen
+  const toggleCrossContamAllergen = (key) => {
+    setCrossContamAllergens((prev) =>
+      prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
     );
   };
 
@@ -270,7 +505,8 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
 
     const mergeAllergenState = (currentVal, incomingVal) => {
       if (currentVal === 'Yes' || incomingVal === 'Yes') return 'Yes';
-      if (currentVal === 'May Contain' || incomingVal === 'May Contain') return 'May Contain';
+      if (currentVal === 'May Contain' || incomingVal === 'May Contain')
+        return 'May Contain';
       return 'No';
     };
 
@@ -285,35 +521,54 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       validComponents.push({ ing, weight });
       totalWeightGrams += weight;
 
-      // Calorie Calculation: (caloriesPer100g / 100) * weightGrams
-      const componentCalories = ((Number(ing.caloriesPer100g) || 0) / 100) * weight;
+      const componentCalories =
+        ((Number(ing.caloriesPer100g) || 0) / 100) * weight;
       totalCalories += componentCalories;
 
-      // Cost Calculation: (costPerPack / packWeightGrams) * weightGrams
       const packWeight = Number(ing.packWeightGrams) || 1;
       const costPerGram = (Number(ing.costPerPack) || 0) / packWeight;
       totalCost += costPerGram * weight;
 
-      // Out-of-Stock Dependency Tracking
       if (ing.inStock === false && !outOfStockItems.includes(ing.productName)) {
         outOfStockItems.push(ing.productName);
       }
 
-      // Allergen Aggregation across 14 major allergens
       const ingAllergens = ing.allergens || {};
       UK_ALLERGENS.forEach(({ key }) => {
         const val = ingAllergens[key] || 'No';
-        aggregatedAllergens[key] = mergeAllergenState(aggregatedAllergens[key], val);
+        aggregatedAllergens[key] = mergeAllergenState(
+          aggregatedAllergens[key],
+          val
+        );
       });
 
-      // Specific Cereal Tracing (Wheat, Barley, Rye, Oats)
       GLUTEN_CEREALS.forEach(({ key }) => {
         const val = ingAllergens[key] || ingAllergens.cereals?.[key] || 'No';
-        aggregatedAllergens[key] = mergeAllergenState(aggregatedAllergens[key], val);
+        aggregatedAllergens[key] = mergeAllergenState(
+          aggregatedAllergens[key],
+          val
+        );
         if (val === 'Yes' || val === 'May Contain') {
-          aggregatedAllergens.gluten = mergeAllergenState(aggregatedAllergens.gluten, val);
+          aggregatedAllergens.gluten = mergeAllergenState(
+            aggregatedAllergens.gluten,
+            val
+          );
         }
       });
+    });
+
+    // Apply Kitchen Cross-Contamination (Shared Fryer / Grill) as "May Contain" if not already "Yes"
+    crossContamAllergens.forEach((key) => {
+      aggregatedAllergens[key] = mergeAllergenState(
+        aggregatedAllergens[key],
+        'May Contain'
+      );
+      if (GLUTEN_CEREALS.some((c) => c.key === key)) {
+        aggregatedAllergens.gluten = mergeAllergenState(
+          aggregatedAllergens.gluten,
+          'May Contain'
+        );
+      }
     });
 
     // Gross Profit (GP%) Calculation
@@ -321,13 +576,32 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     const effectiveRevenue = includeVatInGp ? priceNum / 1.2 : priceNum;
     const grossProfit = effectiveRevenue - totalCost;
     const gpPercentage =
-      effectiveRevenue > 0 ? ((effectiveRevenue - totalCost) / effectiveRevenue) * 100 : 0;
+      effectiveRevenue > 0
+        ? ((effectiveRevenue - totalCost) / effectiveRevenue) * 100
+        : 0;
 
     // Natasha's Law (PPDS) Composite String Generation
-    const sortedForPpds = [...validComponents].sort((a, b) => b.weight - a.weight);
-    const rawCompositeIngredients = sortedForPpds
-      .map(({ ing }) => `${ing.productName} (${ing.ingredientList || ing.productName})`)
+    const sortedForPpds = [...validComponents].sort(
+      (a, b) => b.weight - a.weight
+    );
+    let rawCompositeIngredients = sortedForPpds
+      .map(
+        ({ ing }) =>
+          `${ing.productName} (${ing.ingredientList || ing.productName})`
+      )
       .join(', ');
+
+    if (crossContamAllergens.length > 0 && rawCompositeIngredients) {
+      const traceLabels = crossContamAllergens.map((key) => {
+        const found = [...UK_ALLERGENS, ...GLUTEN_CEREALS].find(
+          (a) => a.key === key
+        );
+        return found ? found.label : key;
+      });
+      rawCompositeIngredients += `. Cooked in a kitchen area/fryer that handles ${traceLabels.join(
+        ', '
+      )}`;
+    }
 
     const ppdsFormatted = formatPPDSString(rawCompositeIngredients);
 
@@ -342,9 +616,14 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       outOfStockItems,
       ppdsFormatted,
     };
-  }, [components, ingredientMap, retailPrice, includeVatInGp]);
+  }, [
+    components,
+    ingredientMap,
+    retailPrice,
+    includeVatInGp,
+    crossContamAllergens,
+  ]);
 
-  // Copy PPDS plain text to clipboard for thermal label software
   const handleCopyPpds = () => {
     if (!metrics.ppdsFormatted.plainText) return;
     navigator.clipboard.writeText(
@@ -387,6 +666,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
           ingredientId: c.ingredientId,
           weightGrams: Number(c.weightGrams),
         })),
+        crossContamAllergens,
         totalCalories: metrics.totalCalories,
         allergens: metrics.aggregatedAllergens,
         ppdsIngredientText: metrics.ppdsFormatted.plainText,
@@ -426,7 +706,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     }
   };
 
-  // Helper badge styling for Allergen states
   const getAllergenBadgeStyle = (status) => {
     if (status === 'Yes') {
       return 'bg-red-600 text-white border-red-700 shadow-sm font-bold';
@@ -437,7 +716,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     return 'bg-slate-100 text-slate-400 border-slate-200';
   };
 
-  // Helper colour coding for GP% margin targets
   const getGpColour = (gp) => {
     if (gp >= 70) return 'text-emerald-600 bg-emerald-50 border-emerald-200';
     if (gp >= 60) return 'text-amber-600 bg-amber-50 border-amber-200';
@@ -450,16 +728,23 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-slate-900">
-            {existingDish ? `Edit Dish: ${existingDish.name}` : 'Dish Builder & Margin Calculator'}
+            {existingDish
+              ? `Edit Dish: ${existingDish.name}`
+              : 'Dish Builder & Margin Calculator'}
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Build recipes with live calorie aggregation, GP% margin tracking, and Natasha&apos;s Law (PPDS) compliance.
+            Build recipes with searchable ingredients, live GP% margin tracking, and Natasha&apos;s Law (PPDS) compliance.
           </p>
         </div>
 
         {/* Active Status Toggle */}
-        <label className="inline-flex items-center gap-3 cursor-pointer bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-sm">
+        <label
+          htmlFor="dish-active-toggle"
+          className="inline-flex items-center gap-3 cursor-pointer bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-sm"
+        >
           <input
+            id="dish-active-toggle"
+            name="dishActiveToggle"
             type="checkbox"
             checked={isActive}
             onChange={(e) => setIsActive(e.target.checked)}
@@ -514,14 +799,21 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
         <div className="lg:col-span-7 space-y-6">
           {/* Card 1: Dish Metadata & Photo Upload */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
-            <h2 className="text-lg font-bold text-slate-800">1. Dish Details &amp; Photo</h2>
+            <h2 className="text-lg font-bold text-slate-800">
+              1. Dish Details &amp; Photo
+            </h2>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                <label
+                  htmlFor="dish-name"
+                  className="block text-xs font-bold uppercase text-slate-600 mb-1"
+                >
                   Dish Name *
                 </label>
                 <input
+                  id="dish-name"
+                  name="dishName"
                   type="text"
                   required
                   placeholder="e.g., Double Bacon Strike Burger"
@@ -532,10 +824,15 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                <label
+                  htmlFor="dish-category"
+                  className="block text-xs font-bold uppercase text-slate-600 mb-1"
+                >
                   Menu Category *
                 </label>
                 <select
+                  id="dish-category"
+                  name="dishCategory"
                   value={category}
                   onChange={(e) => setCategory(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600 text-sm font-medium bg-white"
@@ -549,12 +846,19 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                <label
+                  htmlFor="dish-retail-price"
+                  className="block text-xs font-bold uppercase text-slate-600 mb-1"
+                >
                   Retail Selling Price (£) *
                 </label>
                 <div className="relative">
-                  <span className="absolute left-3.5 top-2.5 text-slate-400 font-bold">£</span>
+                  <span className="absolute left-3.5 top-2.5 text-slate-400 font-bold">
+                    £
+                  </span>
                   <input
+                    id="dish-retail-price"
+                    name="dishRetailPrice"
                     type="number"
                     step="0.01"
                     min="0"
@@ -570,9 +874,9 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
               {/* Dish Photo Upload / Web Link Section */}
               <div className="sm:col-span-2 pt-2 border-t border-slate-100">
                 <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-bold uppercase text-slate-600">
+                  <span className="block text-xs font-bold uppercase text-slate-600">
                     Dish Photo (Optional — Shown on Customer Kiosk)
-                  </label>
+                  </span>
                   <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-100 text-[11px] font-bold">
                     <button
                       type="button"
@@ -601,8 +905,9 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                   </div>
                 </div>
 
-                {/* Hidden File Input */}
                 <input
+                  id="dish-photo-upload"
+                  name="dishPhotoUpload"
                   ref={photoInputRef}
                   type="file"
                   accept="image/*"
@@ -611,7 +916,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                 />
 
                 <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-                  {/* Live Photo Preview Box */}
                   {photoUrl ? (
                     <div className="relative w-28 h-24 rounded-xl overflow-hidden border border-slate-300 bg-slate-100 shrink-0 shadow-2xs">
                       <img
@@ -635,7 +939,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                     </div>
                   )}
 
-                  {/* Upload Trigger or URL Input */}
                   <div className="flex-1 w-full">
                     {photoMode === 'UPLOAD' ? (
                       <div className="space-y-1.5">
@@ -659,6 +962,8 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                     ) : (
                       <div className="space-y-1">
                         <input
+                          id="dish-photo-url"
+                          name="dishPhotoUrl"
                           type="url"
                           placeholder="https://example.com/burger.jpg"
                           value={photoUrl.startsWith('data:') ? '' : photoUrl}
@@ -676,13 +981,15 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
             </div>
           </div>
 
-          {/* Card 2: Recipe Components Table */}
+          {/* Card 2: Searchable Recipe Components Builder */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-bold text-slate-800">2. Recipe Components</h2>
+                <h2 className="text-lg font-bold text-slate-800">
+                  2. Recipe Components (Searchable)
+                </h2>
                 <p className="text-xs text-slate-500">
-                  Select ingredients and enter exact portion weights in grams.
+                  Search by ingredient name, supplier, or code and enter portion weight in grams.
                 </p>
               </div>
               <button
@@ -705,10 +1012,13 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                   const selectedIng = ingredientMap[comp.ingredientId];
                   const weight = parseFloat(comp.weightGrams) || 0;
                   const rowCalories = selectedIng
-                    ? Math.round(((selectedIng.caloriesPer100g || 0) / 100) * weight)
+                    ? Math.round(
+                        ((selectedIng.caloriesPer100g || 0) / 100) * weight
+                      )
                     : 0;
                   const rowCost = selectedIng
-                    ? ((selectedIng.costPerPack || 0) / (selectedIng.packWeightGrams || 1)) *
+                    ? ((selectedIng.costPerPack || 0) /
+                        (selectedIng.packWeightGrams || 1)) *
                       weight
                     : 0;
                   const isOos = selectedIng?.inStock === false;
@@ -723,36 +1033,51 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                       }`}
                     >
                       <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
-                        {/* Ingredient Selector (6 Cols) */}
+                        {/* Searchable Ingredient Combobox (6 Cols) */}
                         <div className="sm:col-span-6">
-                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                            Ingredient {isOos && <span className="text-red-600">(OUT OF STOCK)</span>}
-                          </label>
-                          <select
-                            required
-                            value={comp.ingredientId}
-                            onChange={(e) =>
-                              handleComponentChange(index, 'ingredientId', e.target.value)
+                          <div className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
+                            Ingredient #{index + 1}{' '}
+                            {isOos && (
+                              <span className="text-red-600">(OUT OF STOCK)</span>
+                            )}
+                          </div>
+                          <SearchableIngredientSelect
+                            rowIndex={index}
+                            selectedId={comp.ingredientId}
+                            ingredients={ingredients}
+                            ingredientMap={ingredientMap}
+                            onSelect={(newId) =>
+                              handleComponentChange(index, 'ingredientId', newId)
                             }
-                            className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-medium focus:ring-2 focus:ring-indigo-600"
-                          >
-                            <option value="">-- Select Ingredient --</option>
-                            {ingredients.map((ing) => (
-                              <option key={ing.id} value={ing.id}>
-                                {ing.inStock === false ? '[OOS] ' : ''}
-                                {ing.productName} ({ing.supplier} - £
-                                {Number(ing.costPerPack).toFixed(2)} / {ing.packWeightGrams}g)
-                              </option>
-                            ))}
-                          </select>
+                          />
                         </div>
 
-                        {/* Weight Input in Grams (3 Cols) */}
+                        {/* Weight Input in Grams + Multiplier Helper (3 Cols) */}
                         <div className="sm:col-span-3">
-                          <label className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
-                            Portion Weight (g)
-                          </label>
+                          <div className="flex items-center justify-between mb-1">
+                            <label
+                              htmlFor={`portion-weight-${index}`}
+                              className="block text-[11px] font-bold uppercase text-slate-500"
+                            >
+                              Portion (g)
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setActiveMultiplierRow(
+                                  activeMultiplierRow === index ? null : index
+                                )
+                              }
+                              className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5"
+                              title="Calculate weight from Qty × Unit grams"
+                            >
+                              <Calculator className="w-3 h-3" />
+                              Qty×g
+                            </button>
+                          </div>
                           <input
+                            id={`portion-weight-${index}`}
+                            name={`portionWeight_${index}`}
                             type="number"
                             min="0.1"
                             step="0.1"
@@ -760,7 +1085,11 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                             placeholder="e.g. 120"
                             value={comp.weightGrams}
                             onChange={(e) =>
-                              handleComponentChange(index, 'weightGrams', e.target.value)
+                              handleComponentChange(
+                                index,
+                                'weightGrams',
+                                e.target.value
+                              )
                             }
                             className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm font-bold focus:ring-2 focus:ring-indigo-600"
                           />
@@ -772,7 +1101,9 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                             <div className="text-xs font-bold text-slate-800">
                               £{rowCost.toFixed(2)}
                             </div>
-                            <div className="text-[11px] text-slate-500">{rowCalories} kcal</div>
+                            <div className="text-[11px] text-slate-500">
+                              {rowCalories} kcal
+                            </div>
                           </div>
 
                           <button
@@ -786,11 +1117,81 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                           </button>
                         </div>
                       </div>
+
+                      {/* Expandable Qty × Unit Weight Mini-Calculator */}
+                      {activeMultiplierRow === index && (
+                        <div className="mt-2.5 pt-2.5 border-t border-slate-200 flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-bold text-slate-600">
+                            Quick Multiply:
+                          </span>
+                          <input
+                            id={`mult-qty-${index}`}
+                            name={`multQty_${index}`}
+                            type="number"
+                            step="0.5"
+                            placeholder="Qty (e.g. 3)"
+                            value={multQty}
+                            onChange={(e) => setMultQty(e.target.value)}
+                            className="w-24 px-2.5 py-1 rounded-lg border border-slate-300 bg-white font-semibold"
+                          />
+                          <span>×</span>
+                          <input
+                            id={`mult-unit-${index}`}
+                            name={`multUnit_${index}`}
+                            type="number"
+                            step="1"
+                            placeholder="Unit g (e.g. 45)"
+                            value={multUnitGrams}
+                            onChange={(e) => setMultUnitGrams(e.target.value)}
+                            className="w-28 px-2.5 py-1 rounded-lg border border-slate-300 bg-white font-semibold"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => applyMultiplierToRow(index)}
+                            className="px-3 py-1 rounded-lg bg-indigo-600 text-white font-bold"
+                          >
+                            Apply{' '}
+                            {multQty && multUnitGrams
+                              ? `(${Math.round(multQty * multUnitGrams)}g)`
+                              : ''}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
             )}
+
+            {/* Shared Fryer / Kitchen Cross-Contamination Bar */}
+            <div className="pt-4 border-t border-slate-200 space-y-2">
+              <div className="flex items-center gap-1.5 text-xs font-bold uppercase text-amber-800">
+                <UtensilsCrossed className="w-4 h-4 text-amber-600" />
+                Shared Fryer / Prep Surface Traces (Optional &ldquo;May Contain&rdquo; Override)
+              </div>
+              <p className="text-[11px] text-slate-500">
+                If this dish is cooked in a shared fryer or grill, tap any allergens handled in that equipment to automatically add a &ldquo;May Contain&rdquo; trace warning:
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {UK_ALLERGENS.map((a) => {
+                  const isSelected = crossContamAllergens.includes(a.key);
+                  return (
+                    <button
+                      key={a.key}
+                      type="button"
+                      onClick={() => toggleCrossContamAllergen(a.key)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition ${
+                        isSelected
+                          ? 'bg-amber-400 text-slate-950 border-amber-500 shadow-2xs'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {isSelected ? `+ ${a.label} (Trace)` : a.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           {/* Card 3: Natasha's Law (PPDS) Label Generator */}
@@ -830,7 +1231,8 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
 
             <div className="p-4 rounded-xl bg-amber-50/60 border border-amber-200 font-mono text-xs leading-relaxed text-slate-900">
               <div className="font-bold uppercase text-slate-700 mb-1">
-                {dishName || 'Untitled Dish'} ({metrics.totalWeightGrams}g | {metrics.totalCalories} kcal)
+                {dishName || 'Untitled Dish'} ({metrics.totalWeightGrams}g |{' '}
+                {metrics.totalCalories} kcal)
               </div>
               {metrics.ppdsFormatted.html ? (
                 <p
@@ -857,9 +1259,13 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                 Live Margin &amp; Nutrition
               </h2>
 
-              {/* UK VAT Toggle */}
-              <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 cursor-pointer">
+              <label
+                htmlFor="deduct-vat-toggle"
+                className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 cursor-pointer"
+              >
                 <input
+                  id="deduct-vat-toggle"
+                  name="deductVatToggle"
                   type="checkbox"
                   checked={includeVatInGp}
                   onChange={(e) => setIncludeVatInGp(e.target.checked)}
@@ -870,7 +1276,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              {/* Total Portion Cost */}
               <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
                 <div className="flex items-center gap-1.5 text-xs font-bold uppercase text-slate-500">
                   <PoundSterling className="w-3.5 h-3.5" />
@@ -884,9 +1289,10 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                 </div>
               </div>
 
-              {/* Gross Profit % */}
               <div
-                className={`p-3.5 rounded-xl border ${getGpColour(metrics.gpPercentage)}`}
+                className={`p-3.5 rounded-xl border ${getGpColour(
+                  metrics.gpPercentage
+                )}`}
               >
                 <div className="text-xs font-bold uppercase opacity-80">
                   Gross Profit (GP%)
@@ -899,7 +1305,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                 </div>
               </div>
 
-              {/* Total Calories */}
               <div className="p-3.5 rounded-xl bg-orange-50 border border-orange-200 text-orange-950 col-span-2 flex items-center justify-between">
                 <div>
                   <div className="flex items-center gap-1.5 text-xs font-bold uppercase text-orange-700">
@@ -925,7 +1330,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                 Live Allergen Aggregation (14 Major)
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Automatically computed from selected ingredients. Cannot be manually overridden at dish level.
+                Automatically computed from selected ingredients and shared fryer traces.
               </p>
             </div>
 
