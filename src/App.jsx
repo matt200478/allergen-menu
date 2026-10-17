@@ -26,6 +26,7 @@ import DishBuilder, {
 } from './components/manager/DishBuilder';
 import IngredientManager, {
   evaluateEhoReviewStatus,
+  resolveEffectiveIngredient,
 } from './components/manager/IngredientManager';
 import AdminSettings, {
   DEFAULT_VENUE_SETTINGS,
@@ -54,6 +55,7 @@ import {
   UserCheck,
   Download,
   Search,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 export default function App() {
@@ -70,7 +72,10 @@ export default function App() {
 
   return (
     <Routes>
+      {/* PUBLIC ROUTE: Customer QR Code Kiosk */}
       <Route path="/kiosk" element={<CustomerKiosk />} />
+
+      {/* PROTECTED ROUTE: Manager Dashboard */}
       <Route
         path="/*"
         element={
@@ -89,6 +94,9 @@ export default function App() {
   );
 }
 
+/* ============================================================================
+ * MANAGER LOGIN SCREEN (Firebase Auth Email/Password + Password Reset)
+ * ========================================================================== */
 function ManagerLogin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -242,6 +250,9 @@ function ManagerLogin() {
   );
 }
 
+/* ============================================================================
+ * PROTECTED MANAGER DASHBOARD SHELL
+ * ========================================================================== */
 function ManagerDashboard({ user }) {
   const [activeTab, setActiveTab] = useState('INGREDIENTS');
   const [editingDish, setEditingDish] = useState(null);
@@ -369,6 +380,7 @@ function ManagerDashboard({ user }) {
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {/* Top Manager Navigation Bar (Hidden when printing) */}
       <header className="bg-slate-900 text-white shadow-md no-print sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -543,6 +555,9 @@ function ManagerDashboard({ user }) {
   );
 }
 
+/* ============================================================================
+ * PRINTABLE QR CODE GENERATOR MODAL (Stickers & Counter Signage)
+ * ========================================================================== */
 function QrCodeModal({ onClose }) {
   const defaultKioskUrl =
     typeof window !== 'undefined'
@@ -801,6 +816,9 @@ function QrCodeModal({ onClose }) {
   );
 }
 
+/* ============================================================================
+ * FEATURE 4: A4 PRINTABLE ALLERGEN MATRIX, LIVE GP%, CLONING & BACKUP SWAPS
+ * ========================================================================== */
 function PrintableAllergenMatrix({
   dishes,
   ingredients,
@@ -822,17 +840,29 @@ function PrintableAllergenMatrix({
     return map;
   }, [ingredients]);
 
+  // Calculate live cost, GP%, and active backup substitutions dynamically
   const enrichedDishes = useMemo(() => {
     return dishes.map((dish) => {
       let liveCost = 0;
+      const liveSwaps = [];
+
       (dish.components || []).forEach((comp) => {
-        const ing = ingredientMap[comp.ingredientId];
+        const { effectiveIng, isSwapped, primary, backup } =
+          resolveEffectiveIngredient(comp.ingredientId, ingredientMap);
         const weight = parseFloat(comp.weightGrams) || 0;
-        if (ing && weight > 0) {
+
+        if (effectiveIng && weight > 0) {
           const costPerGram =
-            (Number(ing.costPerPack) || 0) /
-            (Number(ing.packWeightGrams) || 1);
+            (Number(effectiveIng.costPerPack) || 0) /
+            (Number(effectiveIng.packWeightGrams) || 1);
           liveCost += costPerGram * weight;
+        }
+
+        if (isSwapped && primary && backup) {
+          liveSwaps.push({
+            primaryName: primary.productName,
+            backupName: backup.productName,
+          });
         }
       });
 
@@ -845,6 +875,8 @@ function PrintableAllergenMatrix({
         ...dish,
         liveCost,
         gpPercent,
+        liveSwaps:
+          liveSwaps.length > 0 ? liveSwaps : dish.activeSubstitutions || [],
       };
     });
   }, [dishes, ingredientMap, deductVat, vatDivisor]);
@@ -869,7 +901,7 @@ function PrintableAllergenMatrix({
             Menu Profitability &amp; A4 Allergen Matrix
           </h1>
           <p className="text-sm text-slate-600">
-            Live GP% margin tracking (Target: {targetGp}%), dietary tags, 1-click dish cloning, and A4 landscape allergen printing.
+            Live GP% margin tracking (Target: {targetGp}%), dietary tags, active backup swaps, and A4 landscape allergen printing.
           </p>
         </div>
 
@@ -1051,6 +1083,17 @@ function PrintableAllergenMatrix({
                             Hidden
                           </span>
                         )}
+                        {dish.liveSwaps?.length > 0 && (
+                          <span
+                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[9px] font-black uppercase no-print"
+                            title={dish.liveSwaps
+                              .map((s) => `${s.primaryName} → ${s.backupName}`)
+                              .join(', ')}
+                          >
+                            <ArrowLeftRight className="w-2.5 h-2.5" />
+                            SWAP ACTIVE
+                          </span>
+                        )}
                         {dish.hasOutOfStockIngredient && (
                           <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black uppercase no-print">
                             OOS
@@ -1155,7 +1198,6 @@ function AuditLogViewer({ logs, userMap = {}, onOpenSettings }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedUserFilter, setSelectedUserFilter] = useState('ALL');
 
-  // Helper to resolve any UID (including historical entries like PpVTL9cP) to a staff name
   const resolveLogStaff = (log) => {
     const mapped = userMap[log.userId];
     if (mapped?.displayName) {
@@ -1232,7 +1274,7 @@ function AuditLogViewer({ logs, userMap = {}, onOpenSettings }) {
             System Audit Trail
           </h1>
           <p className="text-sm text-slate-600">
-            Immutable log of all ingredient allergen updates, EHO 90-day spec verifications, stock changes, and recipe edits.
+            Immutable log of all ingredient allergen updates, backup swaps, EHO 90-day spec verifications, and recipe edits.
           </p>
         </div>
 
