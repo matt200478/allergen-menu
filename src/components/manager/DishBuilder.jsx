@@ -214,7 +214,8 @@ const compressImageFile = (file, maxWidth = 800, maxHeight = 600, quality = 0.78
   });
 };
 
-const CATEGORIES = [
+// Default fallback categories if none have been saved in Settings yet
+export const DEFAULT_CATEGORIES = [
   'Burgers & Hot Dogs',
   'Sharing Platters & Bowling Bites',
   'Pizzas',
@@ -430,8 +431,15 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   const [ingredients, setIngredients] = useState([]);
   const [loadingIngredients, setLoadingIngredients] = useState(true);
 
+  // Dynamic Categories & Financial Settings synced from Firestore 'settings/general'
+  const [customCategories, setCustomCategories] = useState(DEFAULT_CATEGORIES);
+  const [targetGpSetting, setTargetGpSetting] = useState(70);
+  const [vatRateSetting, setVatRateSetting] = useState(20);
+
   const [dishName, setDishName] = useState(existingDish?.name || '');
-  const [category, setCategory] = useState(existingDish?.category || CATEGORIES[0]);
+  const [category, setCategory] = useState(
+    existingDish?.category || DEFAULT_CATEGORIES[0]
+  );
   const [photoUrl, setPhotoUrl] = useState(existingDish?.photoUrl || '');
   const [photoMode, setPhotoMode] = useState('UPLOAD');
   const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
@@ -460,8 +468,9 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
 
   const photoInputRef = useRef(null);
 
+  // 1. Real-time Subscription to Ingredients & Venue Settings (Categories, Target GP%, VAT%)
   useEffect(() => {
-    const unsubscribe = onSnapshot(
+    const unsubIngredients = onSnapshot(
       collection(db, 'ingredients'),
       (snapshot) => {
         const fetched = snapshot.docs.map((docSnap) => ({
@@ -478,8 +487,49 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
       }
     );
 
-    return () => unsubscribe();
-  }, []);
+    const unsubSettings = onSnapshot(
+      doc(db, 'settings', 'general'),
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (Array.isArray(data.categories) && data.categories.length > 0) {
+            setCustomCategories(data.categories);
+            // If creating a new dish and current default category was removed in Settings, switch to first valid category
+            if (!existingDish?.category) {
+              setCategory((prevCat) =>
+                data.categories.includes(prevCat) ? prevCat : data.categories[0]
+              );
+            }
+          }
+          if (data.targetGpPercentage) {
+            setTargetGpSetting(Number(data.targetGpPercentage));
+          }
+          if (data.vatPercentage !== undefined) {
+            setVatRateSetting(Number(data.vatPercentage));
+          }
+        }
+      },
+      (err) => {
+        console.error('Error syncing settings in DishBuilder:', err);
+      }
+    );
+
+    return () => {
+      unsubIngredients();
+      unsubSettings();
+    };
+  }, [existingDish?.category]);
+
+  // Combine saved Settings categories with the existing dish's category (if it had a legacy category)
+  const categoryOptions = useMemo(() => {
+    if (
+      existingDish?.category &&
+      !customCategories.includes(existingDish.category)
+    ) {
+      return [existingDish.category, ...customCategories];
+    }
+    return customCategories;
+  }, [customCategories, existingDish?.category]);
 
   const ingredientMap = useMemo(() => {
     const map = {};
@@ -654,7 +704,8 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     });
 
     const priceNum = parseFloat(retailPrice) || 0;
-    const effectiveRevenue = includeVatInGp ? priceNum / 1.2 : priceNum;
+    const vatDivisor = 1 + (vatRateSetting || 20) / 100;
+    const effectiveRevenue = includeVatInGp ? priceNum / vatDivisor : priceNum;
     const grossProfit = effectiveRevenue - totalCost;
     const gpPercentage =
       effectiveRevenue > 0
@@ -734,6 +785,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     ingredientMap,
     retailPrice,
     includeVatInGp,
+    vatRateSetting,
     crossContamAllergens,
     dietaryTags,
   ]);
@@ -834,8 +886,10 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   };
 
   const getGpColour = (gp) => {
-    if (gp >= 70) return 'text-emerald-600 bg-emerald-50 border-emerald-200';
-    if (gp >= 60) return 'text-amber-600 bg-amber-50 border-amber-200';
+    if (gp >= targetGpSetting)
+      return 'text-emerald-600 bg-emerald-50 border-emerald-200';
+    if (gp >= targetGpSetting - 10)
+      return 'text-amber-600 bg-amber-50 border-amber-200';
     return 'text-red-600 bg-red-50 border-red-200';
   };
 
@@ -961,7 +1015,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                   htmlFor="dish-category"
                   className="block text-xs font-bold uppercase text-slate-600 mb-1"
                 >
-                  Menu Category *
+                  Menu Category (Synced from Settings) *
                 </label>
                 <select
                   id="dish-category"
@@ -970,7 +1024,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                   onChange={(e) => setCategory(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-600 focus:border-indigo-600 text-sm font-medium bg-white"
                 >
-                  {CATEGORIES.map((cat) => (
+                  {categoryOptions.map((cat) => (
                     <option key={cat} value={cat}>
                       {cat}
                     </option>
@@ -1438,7 +1492,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                   onChange={(e) => setIncludeVatInGp(e.target.checked)}
                   className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                 />
-                Deduct 20% VAT
+                Deduct {vatRateSetting}% VAT
               </label>
             </div>
 
@@ -1462,13 +1516,15 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                 )}`}
               >
                 <div className="text-xs font-bold uppercase opacity-80">
-                  Gross Profit (GP%)
+                  Gross Profit (Target: {targetGpSetting}%)
                 </div>
                 <div className="text-2xl font-extrabold mt-1">
                   {metrics.gpPercentage.toFixed(1)}%
                 </div>
                 <div className="text-[11px] opacity-80 mt-0.5">
-                  {includeVatInGp ? 'Net (ex. 20% VAT)' : 'Gross Retail Basis'}
+                  {includeVatInGp
+                    ? `Net (ex. ${vatRateSetting}% VAT)`
+                    : 'Gross Retail Basis'}
                 </div>
               </div>
 
