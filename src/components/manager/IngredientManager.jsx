@@ -9,7 +9,11 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db, auth } from '../../firebase/config';
-import { UK_ALLERGENS, GLUTEN_CEREALS } from './DishBuilder';
+import {
+  UK_ALLERGENS,
+  GLUTEN_CEREALS,
+  formatPPDSString,
+} from './DishBuilder';
 import {
   Plus,
   Search,
@@ -29,6 +33,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Clock,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 // Helper to create a clean default allergen map
@@ -45,7 +50,6 @@ const createDefaultAllergens = () => {
 
 /**
  * Evaluates a Firestore timestamp against the 90-day EHO review threshold.
- * Returns { status: 'VALID' | 'DUE_SOON' | 'OVERDUE', daysAgo: number | null, dateStr: string }
  */
 export const evaluateEhoReviewStatus = (timestamp) => {
   if (!timestamp) {
@@ -72,6 +76,156 @@ export const evaluateEhoReviewStatus = (timestamp) => {
     return { status: 'DUE_SOON', daysAgo, dateStr };
   }
   return { status: 'VALID', daysAgo, dateStr };
+};
+
+/**
+ * Resolves whether an ingredient is using its primary spec, an active in-stock backup, or is completely OOS.
+ */
+export const resolveEffectiveIngredient = (ingId, ingredientMap) => {
+  const primary = ingredientMap[ingId];
+  if (!primary) return { effectiveIng: null, isSwapped: false, isOos: true, primary: null };
+
+  // Primary is in stock -> use Primary
+  if (primary.inStock !== false) {
+    return { effectiveIng: primary, isSwapped: false, isOos: false, primary };
+  }
+
+  // Primary is Out of Stock -> check if a linked Backup / Substitute exists and is In Stock
+  if (primary.substituteId && ingredientMap[primary.substituteId]) {
+    const backup = ingredientMap[primary.substituteId];
+    if (backup.inStock !== false) {
+      return {
+        effectiveIng: backup,
+        isSwapped: true,
+        isOos: false,
+        primary,
+        backup,
+      };
+    }
+  }
+
+  // Primary is OOS and no available backup
+  return { effectiveIng: primary, isSwapped: false, isOos: true, primary };
+};
+
+/**
+ * Recomputes a dish's aggregated allergens, calories, Natasha's Law PPDS text,
+ * OOS status, and active substitutions using the latest ingredient map.
+ */
+export const recalculateDishPayload = (dish, ingredientMap) => {
+  let totalCalories = 0;
+  let hasOutOfStockIngredient = false;
+  const activeSubstitutions = [];
+
+  const aggregatedAllergens = createDefaultAllergens();
+
+  const mergeAllergenState = (currentVal, incomingVal) => {
+    if (currentVal === 'Yes' || incomingVal === 'Yes') return 'Yes';
+    if (currentVal === 'May Contain' || incomingVal === 'May Contain')
+      return 'May Contain';
+    return 'No';
+  };
+
+  const validComponents = [];
+
+  (dish.components || []).forEach((comp) => {
+    const weight = parseFloat(comp.weightGrams) || 0;
+    if (!comp.ingredientId || weight <= 0) return;
+
+    const { effectiveIng, isSwapped, isOos, primary, backup } =
+      resolveEffectiveIngredient(comp.ingredientId, ingredientMap);
+
+    if (!effectiveIng) return;
+
+    if (isOos) {
+      hasOutOfStockIngredient = true;
+    }
+
+    if (isSwapped && primary && backup) {
+      activeSubstitutions.push({
+        primaryId: primary.id,
+        primaryName: primary.productName,
+        backupId: backup.id,
+        backupName: backup.productName,
+      });
+    }
+
+    validComponents.push({ ing: effectiveIng, weight });
+
+    // Calories
+    totalCalories += ((Number(effectiveIng.caloriesPer100g) || 0) / 100) * weight;
+
+    // 14 Major Allergens
+    const ingAllergens = effectiveIng.allergens || {};
+    UK_ALLERGENS.forEach(({ key }) => {
+      const val = ingAllergens[key] || 'No';
+      aggregatedAllergens[key] = mergeAllergenState(
+        aggregatedAllergens[key],
+        val
+      );
+    });
+
+    // 4 Gluten Cereals
+    GLUTEN_CEREALS.forEach(({ key }) => {
+      const val = ingAllergens[key] || ingAllergens.cereals?.[key] || 'No';
+      aggregatedAllergens[key] = mergeAllergenState(
+        aggregatedAllergens[key],
+        val
+      );
+      if (val === 'Yes' || val === 'May Contain') {
+        aggregatedAllergens.gluten = mergeAllergenState(
+          aggregatedAllergens.gluten,
+          val
+        );
+      }
+    });
+  });
+
+  // Preserve shared fryer / prep surface cross-contamination traces on the dish
+  (dish.crossContamAllergens || []).forEach((key) => {
+    aggregatedAllergens[key] = mergeAllergenState(
+      aggregatedAllergens[key],
+      'May Contain'
+    );
+    if (GLUTEN_CEREALS.some((c) => c.key === key)) {
+      aggregatedAllergens.gluten = mergeAllergenState(
+        aggregatedAllergens.gluten,
+        'May Contain'
+      );
+    }
+  });
+
+  // Rebuild Natasha's Law (PPDS) string using the active (primary or backup) ingredients
+  const sortedForPpds = [...validComponents].sort((a, b) => b.weight - a.weight);
+  let rawCompositeIngredients = sortedForPpds
+    .map(
+      ({ ing }) =>
+        `${ing.productName} (${ing.ingredientList || ing.productName})`
+    )
+    .join(', ');
+
+  if ((dish.crossContamAllergens || []).length > 0 && rawCompositeIngredients) {
+    const traceLabels = dish.crossContamAllergens.map((key) => {
+      const found = [...UK_ALLERGENS, ...GLUTEN_CEREALS].find(
+        (a) => a.key === key
+      );
+      return found ? found.label : key;
+    });
+    rawCompositeIngredients += `. Cooked in a kitchen area/fryer that handles ${traceLabels.join(
+      ', '
+    )}`;
+  }
+
+  const ppdsFormatted = formatPPDSString(rawCompositeIngredients);
+
+  return {
+    totalCalories: Math.round(totalCalories),
+    allergens: aggregatedAllergens,
+    ppdsIngredientText: ppdsFormatted.plainText,
+    hasOutOfStockIngredient,
+    activeSubstitutions,
+    updatedAt: serverTimestamp(),
+  };
 };
 
 // ============================================================================
@@ -236,6 +390,7 @@ const INITIAL_FORM_STATE = {
   packWeightGrams: '',
   ingredientList: '',
   inStock: true,
+  substituteId: '', // Optional ID of backup ingredient
   allergens: createDefaultAllergens(),
 };
 
@@ -337,7 +492,7 @@ export default function IngredientManager() {
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterStock, setFilterStock] = useState('ALL'); // 'ALL' | 'IN_STOCK' | 'OOS' | 'EHO_DUE'
+  const [filterStock, setFilterStock] = useState('ALL'); // 'ALL' | 'IN_STOCK' | 'SWAPPED' | 'OOS' | 'EHO_DUE'
 
   // Modal / Form State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -370,23 +525,42 @@ export default function IngredientManager() {
     };
   }, []);
 
-  // 2. Map Ingredient ID -> Array of Dishes that rely on it
+  // Build O(1) lookup map of ingredients
+  const ingredientMap = useMemo(() => {
+    const map = {};
+    ingredients.forEach((ing) => {
+      map[ing.id] = ing;
+    });
+    return map;
+  }, [ingredients]);
+
+  // 2. Map Ingredient ID -> Array of Dishes that rely on it (either as primary or as an assigned backup!)
   const dependencyMap = useMemo(() => {
     const map = {};
     dishes.forEach((dish) => {
       (dish.components || []).forEach((comp) => {
-        if (!map[comp.ingredientId]) {
-          map[comp.ingredientId] = [];
+        const primaryId = comp.ingredientId;
+        if (!primaryId) return;
+
+        if (!map[primaryId]) map[primaryId] = [];
+        if (!map[primaryId].some((d) => d.id === dish.id)) {
+          map[primaryId].push(dish);
         }
-        if (!map[comp.ingredientId].some((d) => d.id === dish.id)) {
-          map[comp.ingredientId].push(dish);
+
+        // Also register the dish under the backup ingredient so if the backup goes OOS, it cascades too
+        const primaryIng = ingredientMap[primaryId];
+        if (primaryIng?.substituteId) {
+          const backupId = primaryIng.substituteId;
+          if (!map[backupId]) map[backupId] = [];
+          if (!map[backupId].some((d) => d.id === dish.id)) {
+            map[backupId].push(dish);
+          }
         }
       });
     });
     return map;
-  }, [dishes]);
+  }, [dishes, ingredientMap]);
 
-  // Count how many ingredients are Due Soon (75-89d) or Overdue (90d+) for EHO Review
   const ehoDueCount = useMemo(() => {
     return ingredients.filter((ing) => {
       const { status } = evaluateEhoReviewStatus(ing.lastVerifiedDate);
@@ -423,7 +597,6 @@ export default function IngredientManager() {
     }
   };
 
-  // Handle typing or pasting into the Supplier Sub-Ingredients textarea
   const handleIngredientListChange = (newText) => {
     setFormData((prev) => {
       let updatedProductName = prev.productName;
@@ -501,6 +674,7 @@ export default function IngredientManager() {
         packWeightGrams: ingredient.packWeightGrams ?? '',
         ingredientList: ingredient.ingredientList || '',
         inStock: ingredient.inStock ?? true,
+        substituteId: ingredient.substituteId || '',
         allergens: { ...createDefaultAllergens(), ...(ingredient.allergens || {}) },
       });
     } else {
@@ -510,10 +684,25 @@ export default function IngredientManager() {
     setIsModalOpen(true);
   };
 
-  // 3. Instant Out-of-Stock (OOS) Toggle + Automatic Dish Cascade Update
+  // 3. Instant Stock / Backup Swap Toggle + Full Multi-Dish Allergen & PPDS Cascade
   const handleToggleStock = async (ingredient) => {
     const newStockState = !ingredient.inStock;
     const affectedDishes = dependencyMap[ingredient.id] || [];
+
+    // Build an updated in-memory ingredient map reflecting this stock change
+    const updatedIngredientMap = {
+      ...ingredientMap,
+      [ingredient.id]: {
+        ...ingredient,
+        inStock: newStockState,
+      },
+    };
+
+    const backupIng = ingredient.substituteId
+      ? updatedIngredientMap[ingredient.substituteId]
+      : null;
+    const isSwappingToBackup =
+      !newStockState && backupIng && backupIng.inStock !== false;
 
     try {
       const batch = writeBatch(db);
@@ -523,35 +712,40 @@ export default function IngredientManager() {
         inStock: newStockState,
       });
 
+      // Recalculate allergens, calories, PPDS text, and OOS flags for every dependent dish
       affectedDishes.forEach((dish) => {
-        const dishHasOos = (dish.components || []).some((comp) => {
-          if (comp.ingredientId === ingredient.id) return !newStockState;
-          const otherIng = ingredients.find((i) => i.id === comp.ingredientId);
-          return otherIng ? otherIng.inStock === false : false;
-        });
-
-        batch.update(doc(db, 'dishes', dish.id), {
-          hasOutOfStockIngredient: dishHasOos,
-          updatedAt: serverTimestamp(),
-        });
+        const recalculated = recalculateDishPayload(dish, updatedIngredientMap);
+        batch.update(doc(db, 'dishes', dish.id), recalculated);
       });
 
+      // Record descriptive audit log
       const auditRef = doc(collection(db, 'audit_logs'));
+      let actionDescription = '';
+      if (isSwappingToBackup) {
+        actionDescription = `Marked "${ingredient.productName}" Out of Stock — Auto-Swapped ${affectedDishes.length} dish(es) to backup "${backupIng.productName}" (allergens & PPDS updated)`;
+      } else if (newStockState && backupIng) {
+        actionDescription = `Restored "${ingredient.productName}" to In Stock — Reverted ${affectedDishes.length} dish(es) from backup "${backupIng.productName}" to primary spec`;
+      } else {
+        actionDescription = `Marked ingredient "${ingredient.productName}" as ${
+          newStockState ? 'IN STOCK' : 'OUT OF STOCK'
+        } (${affectedDishes.length} menu dishes updated)`;
+      }
+
       batch.set(auditRef, {
         timestamp: serverTimestamp(),
-        action: `Marked ingredient "${ingredient.productName}" as ${
-          newStockState ? 'IN STOCK' : 'OUT OF STOCK'
-        } (${affectedDishes.length} menu dishes affected)`,
+        action: actionDescription,
         userId: auth.currentUser?.uid || 'manager-session',
       });
 
       await batch.commit();
 
       setFeedback({
-        type: newStockState ? 'success' : 'warning',
-        text: `"${ingredient.productName}" marked ${
-          newStockState ? 'In Stock' : 'Out of Stock'
-        }. ${affectedDishes.length} dependent dish(es) updated automatically.`,
+        type: isSwappingToBackup
+          ? 'warning'
+          : newStockState
+          ? 'success'
+          : 'warning',
+        text: actionDescription,
       });
     } catch (error) {
       console.error('Error toggling stock:', error);
@@ -559,7 +753,7 @@ export default function IngredientManager() {
     }
   };
 
-  // 4. Save New or Edited Ingredient + Audit Log
+  // 4. Save New or Edited Ingredient + Cascade Any Allergen/Backup Changes to Dependent Dishes
   const handleSaveIngredient = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -579,17 +773,37 @@ export default function IngredientManager() {
         packWeightGrams: Number(formData.packWeightGrams),
         ingredientList: formData.ingredientList.trim(),
         inStock: Boolean(formData.inStock),
+        substituteId: formData.substituteId || null,
         allergens: formData.allergens,
         lastVerifiedDate: serverTimestamp(),
       };
 
       batch.set(ingRef, payload, { merge: true });
 
+      // If editing an existing ingredient, immediately cascade any updated allergens or backup links to all dishes using it
+      const affectedDishes = editingId ? dependencyMap[editingId] || [] : [];
+      if (editingId && affectedDishes.length > 0) {
+        const updatedIngredientMap = {
+          ...ingredientMap,
+          [editingId]: { id: editingId, ...payload },
+        };
+        affectedDishes.forEach((dish) => {
+          const recalculated = recalculateDishPayload(dish, updatedIngredientMap);
+          batch.update(doc(db, 'dishes', dish.id), recalculated);
+        });
+      }
+
+      const backupName = payload.substituteId
+        ? ingredientMap[payload.substituteId]?.productName
+        : null;
+
       const auditRef = doc(collection(db, 'audit_logs'));
       batch.set(auditRef, {
         timestamp: serverTimestamp(),
         action: editingId
-          ? `Updated & EHO-verified ingredient profile: "${payload.productName}"`
+          ? `Updated & EHO-verified ingredient: "${payload.productName}"${
+              backupName ? ` (Backup linked: "${backupName}")` : ''
+            }`
           : `Created new ingredient: "${payload.productName}" (${payload.supplierCode})`,
         userId: auth.currentUser?.uid || 'manager-session',
       });
@@ -598,7 +812,11 @@ export default function IngredientManager() {
       setIsModalOpen(false);
       setFeedback({
         type: 'success',
-        text: `Ingredient "${payload.productName}" saved and EHO 90-day verification timer reset.`,
+        text: `Ingredient "${payload.productName}" saved${
+          affectedDishes.length > 0
+            ? ` and ${affectedDishes.length} linked dish(es) recalculated.`
+            : '.'
+        }`,
       });
     } catch (error) {
       console.error('Failed to save ingredient:', error);
@@ -613,7 +831,7 @@ export default function IngredientManager() {
     if (usedIn.length > 0) {
       setFeedback({
         type: 'error',
-        text: `Cannot delete "${ingredient.productName}" because it is used in: ${usedIn
+        text: `Cannot delete "${ingredient.productName}" because it is linked to: ${usedIn
           .map((d) => d.name)
           .join(', ')}.`,
       });
@@ -860,92 +1078,6 @@ export default function IngredientManager() {
     }
   };
 
-  // 8. Quick-Seed Sample Ingredients
-  const handleSeedDemoIngredients = async () => {
-    const sampleItems = [
-      {
-        supplier: 'Brakes',
-        supplierCode: 'BRK-10492',
-        productName: 'Glazed Brioche Burger Bun (85g)',
-        caloriesPer100g: 294,
-        costPerPack: 14.4,
-        packWeightGrams: 4080,
-        ingredientList:
-          'WHEAT Flour (with Calcium, Iron, Niacin, Thiamin), Water, Sugar, Rapeseed Oil, Glaze (Water, MILK Proteins, Egg), Yeast, Salt, Malted BARLEY Flour',
-        inStock: true,
-        allergens: {
-          ...createDefaultAllergens(),
-          gluten: 'Yes',
-          wheat: 'Yes',
-          barley: 'Yes',
-          eggs: 'Yes',
-          milk: 'Yes',
-          sesame: 'May Contain',
-        },
-      },
-      {
-        supplier: 'Bidfood',
-        supplierCode: 'BID-88310',
-        productName: 'Prime 4oz Beef Burger Patty (113g)',
-        caloriesPer100g: 252,
-        costPerPack: 28.5,
-        packWeightGrams: 5424,
-        ingredientList: 'Beef (98%), Sea Salt, Cracked Black Pepper',
-        inStock: true,
-        allergens: createDefaultAllergens(),
-      },
-      {
-        supplier: 'Brakes',
-        supplierCode: 'BRK-33201',
-        productName: 'Monterey Jack Cheese Slices (20g)',
-        caloriesPer100g: 373,
-        costPerPack: 9.8,
-        packWeightGrams: 1000,
-        ingredientList:
-          'Pasteurised Cow MILK, Salt, Vegetarian Rennet, Starter Culture',
-        inStock: true,
-        allergens: {
-          ...createDefaultAllergens(),
-          milk: 'Yes',
-        },
-      },
-      {
-        supplier: 'Bidfood',
-        supplierCode: 'BID-55190',
-        productName: 'Crispy Coated Skin-On Fries',
-        caloriesPer100g: 165,
-        costPerPack: 16.2,
-        packWeightGrams: 10000,
-        ingredientList:
-          'Potato (89%), Sunflower Oil, Batter (Rice Flour, Potato Dextrin, Salt, Turmeric)',
-        inStock: true,
-        allergens: {
-          ...createDefaultAllergens(),
-          gluten: 'May Contain',
-          wheat: 'May Contain',
-        },
-      },
-    ];
-
-    try {
-      const batch = writeBatch(db);
-      sampleItems.forEach((item) => {
-        const ref = doc(collection(db, 'ingredients'));
-        batch.set(ref, { ...item, lastVerifiedDate: serverTimestamp() });
-      });
-      await batch.commit();
-      setFeedback({
-        type: 'success',
-        text: '4 sample FEC ingredients added to Firestore! You can now build dishes.',
-      });
-    } catch (error) {
-      setFeedback({
-        type: 'error',
-        text: `Failed to seed data: ${error.message}`,
-      });
-    }
-  };
-
   // Filtered Ingredients list
   const filteredIngredients = useMemo(() => {
     return ingredients.filter((ing) => {
@@ -956,15 +1088,21 @@ export default function IngredientManager() {
 
       if (!matchesSearch) return false;
 
+      const { isSwapped, isOos } = resolveEffectiveIngredient(
+        ing.id,
+        ingredientMap
+      );
+
       if (filterStock === 'IN_STOCK') return ing.inStock !== false;
-      if (filterStock === 'OOS') return ing.inStock === false;
+      if (filterStock === 'SWAPPED') return isSwapped;
+      if (filterStock === 'OOS') return isOos;
       if (filterStock === 'EHO_DUE') {
         const { status } = evaluateEhoReviewStatus(ing.lastVerifiedDate);
         return status === 'OVERDUE' || status === 'DUE_SOON';
       }
       return true;
     });
-  }, [ingredients, searchQuery, filterStock]);
+  }, [ingredients, ingredientMap, searchQuery, filterStock]);
 
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-6 bg-slate-50 min-h-screen">
@@ -972,10 +1110,10 @@ export default function IngredientManager() {
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
           <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900">
-            Ingredient &amp; EHO Spec Inventory
+            Ingredient, Backup Swap &amp; EHO Inventory
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Manage supplier packs, 90-day EHO spec verification traffic lights, CSV bulk imports, and Out-of-Stock dependencies.
+            Manage supplier packs, global backup substitutions, 90-day EHO checks, and live Out-of-Stock dependencies.
           </p>
         </div>
 
@@ -994,7 +1132,6 @@ export default function IngredientManager() {
             type="button"
             onClick={handleDownloadCsvTemplate}
             className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-bold text-xs shadow-2xs transition"
-            title="Download a blank CSV template with headers and 1 example row"
           >
             <FileSpreadsheet className="w-4 h-4 text-slate-500" />
             CSV Template
@@ -1005,7 +1142,6 @@ export default function IngredientManager() {
             disabled={isImportingCsv}
             onClick={() => fileInputRef.current?.click()}
             className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-bold text-xs shadow-2xs transition disabled:opacity-50"
-            title="Bulk upload or update ingredients from a CSV file"
           >
             <Upload className="w-4 h-4 text-indigo-600" />
             {isImportingCsv ? 'Importing CSV...' : 'Import CSV'}
@@ -1015,22 +1151,10 @@ export default function IngredientManager() {
             type="button"
             onClick={handleExportCsv}
             className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-bold text-xs shadow-2xs transition"
-            title="Export all ingredients and allergen profiles to CSV"
           >
             <Download className="w-4 h-4 text-emerald-600" />
             Export CSV
           </button>
-
-          {ingredients.length === 0 && !loading && (
-            <button
-              type="button"
-              onClick={handleSeedDemoIngredients}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-sm transition"
-            >
-              <Database className="w-4 h-4" />
-              Seed 4 Sample Ingredients
-            </button>
-          )}
 
           <button
             type="button"
@@ -1043,7 +1167,7 @@ export default function IngredientManager() {
         </div>
       </div>
 
-      {/* EHO 90-Day Review Alert Banner (if any ingredients are due/overdue) */}
+      {/* EHO 90-Day Review Alert Banner */}
       {ehoDueCount > 0 && (
         <div className="mt-4 p-4 rounded-xl bg-amber-50 border-2 border-amber-400 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start gap-3">
@@ -1053,7 +1177,7 @@ export default function IngredientManager() {
                 EHO 90-Day Specification Review Notice
               </h3>
               <p className="text-xs text-amber-900 mt-0.5">
-                <strong>{ehoDueCount}</strong> ingredient specification(s) are approaching or past the 90-day verification window. Please check supplier labels and click <strong>Verify Today</strong>.
+                <strong>{ehoDueCount}</strong> ingredient specification(s) are approaching or past the 90-day verification window.
               </p>
             </div>
           </div>
@@ -1064,7 +1188,9 @@ export default function IngredientManager() {
             }
             className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-extrabold shrink-0 transition"
           >
-            {filterStock === 'EHO_DUE' ? 'Show All Ingredients' : `Filter ${ehoDueCount} Due Item(s)`}
+            {filterStock === 'EHO_DUE'
+              ? 'Show All Ingredients'
+              : `Filter ${ehoDueCount} Due Item(s)`}
           </button>
         </div>
       )}
@@ -1098,7 +1224,7 @@ export default function IngredientManager() {
         </div>
       )}
 
-      {/* Search & Stock / EHO Filter Bar */}
+      {/* Search & Stock / Swap Filter Bar */}
       <div className="mt-6 flex flex-col sm:flex-row gap-3 items-center justify-between">
         <div className="relative w-full sm:w-96">
           <label htmlFor="ingredient-search" className="sr-only">
@@ -1121,7 +1247,8 @@ export default function IngredientManager() {
           {[
             { id: 'ALL', label: `All (${ingredients.length})` },
             { id: 'IN_STOCK', label: 'In Stock' },
-            { id: 'OOS', label: 'Out of Stock (OOS)' },
+            { id: 'SWAPPED', label: 'Swapped to Backup' },
+            { id: 'OOS', label: 'Out of Stock (No Backup)' },
             { id: 'EHO_DUE', label: `EHO Review Due (${ehoDueCount})` },
           ].map((tab) => (
             <button
@@ -1146,10 +1273,10 @@ export default function IngredientManager() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-100 border-b border-slate-200 text-[11px] font-bold uppercase text-slate-600">
-                <th className="py-3.5 px-4">Stock Status</th>
-                <th className="py-3.5 px-4">Ingredient &amp; Supplier</th>
+                <th className="py-3.5 px-4">Stock / Swap Status</th>
+                <th className="py-3.5 px-4">Ingredient &amp; Linked Backup</th>
                 <th className="py-3.5 px-4">Pack Cost / Weight</th>
-                <th className="py-3.5 px-4">EHO 90-Day Spec Check</th>
+                <th className="py-3.5 px-4">EHO 90-Day Check</th>
                 <th className="py-3.5 px-4">Active Allergens</th>
                 <th className="py-3.5 px-4">Menu Dependencies</th>
                 <th className="py-3.5 px-4 text-right">Actions</th>
@@ -1164,26 +1291,51 @@ export default function IngredientManager() {
                     ing.allergens?.[a.key] === 'May Contain'
                 );
                 const ehoStatus = evaluateEhoReviewStatus(ing.lastVerifiedDate);
+                const { isSwapped, isOos, backup } = resolveEffectiveIngredient(
+                  ing.id,
+                  ingredientMap
+                );
+                const configuredBackup = ing.substituteId
+                  ? ingredientMap[ing.substituteId]
+                  : null;
 
                 return (
                   <tr
                     key={ing.id}
                     className={
-                      ing.inStock === false ? 'bg-red-50/60' : 'hover:bg-slate-50'
+                      isSwapped
+                        ? 'bg-indigo-50/60'
+                        : isOos
+                        ? 'bg-red-50/60'
+                        : 'hover:bg-slate-50'
                     }
                   >
-                    {/* Stock Toggle */}
+                    {/* Stock / Swap Toggle Button */}
                     <td className="py-3.5 px-4">
                       <button
                         type="button"
                         onClick={() => handleToggleStock(ing)}
                         className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                          ing.inStock === false
-                            ? 'bg-red-600 text-white shadow-sm'
+                          isSwapped
+                            ? 'bg-indigo-600 text-white shadow-sm hover:bg-indigo-700'
+                            : isOos
+                            ? 'bg-red-600 text-white shadow-sm hover:bg-red-700'
                             : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
                         }`}
+                        title={
+                          isSwapped
+                            ? 'Click when primary stock arrives to switch all dishes back to primary'
+                            : configuredBackup
+                            ? `Click to mark Out of Stock and automatically swap dishes to "${configuredBackup.productName}"`
+                            : 'Click to toggle stock status'
+                        }
                       >
-                        {ing.inStock === false ? (
+                        {isSwapped ? (
+                          <>
+                            <ArrowLeftRight className="w-4 h-4" />
+                            SWAPPED TO BACKUP
+                          </>
+                        ) : isOos ? (
                           <>
                             <PackageX className="w-4 h-4" />
                             OUT OF STOCK
@@ -1197,7 +1349,7 @@ export default function IngredientManager() {
                       </button>
                     </td>
 
-                    {/* Name & Supplier */}
+                    {/* Name, Supplier & Linked Backup Info */}
                     <td className="py-3.5 px-4">
                       <div className="font-bold text-slate-900">
                         {ing.productName}
@@ -1207,6 +1359,23 @@ export default function IngredientManager() {
                         <span className="font-mono">{ing.supplierCode}</span> •{' '}
                         {ing.caloriesPer100g} kcal/100g
                       </div>
+
+                      {/* Linked Backup Pill */}
+                      {configuredBackup && (
+                        <div
+                          className={`mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-bold border ${
+                            isSwapped
+                              ? 'bg-indigo-600 text-white border-indigo-700'
+                              : 'bg-slate-100 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          <ArrowLeftRight className="w-3 h-3 shrink-0" />
+                          <span>
+                            {isSwapped ? 'ACTIVE SWAP:' : 'Backup:'}{' '}
+                            {configuredBackup.productName} ({configuredBackup.supplier})
+                          </span>
+                        </div>
+                      )}
                     </td>
 
                     {/* Cost & Pack Size */}
@@ -1219,7 +1388,7 @@ export default function IngredientManager() {
                       </div>
                     </td>
 
-                    {/* EHO 90-Day Traffic Light & 1-Click Verify */}
+                    {/* EHO 90-Day Traffic Light */}
                     <td className="py-3.5 px-4">
                       <div className="flex flex-col items-start gap-1">
                         <span
@@ -1255,7 +1424,6 @@ export default function IngredientManager() {
                             type="button"
                             onClick={() => handleVerifyIngredientSpec(ing)}
                             className="inline-flex items-center gap-0.5 text-indigo-600 hover:text-indigo-800 font-bold underline"
-                            title="Stamp today's date as EHO verified and log audit trail"
                           >
                             <ShieldCheck className="w-3 h-3" />
                             Verify Today
@@ -1299,7 +1467,9 @@ export default function IngredientManager() {
                             <span
                               key={d.id}
                               className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                                ing.inStock === false
+                                isSwapped
+                                  ? 'bg-indigo-100 text-indigo-900 border border-indigo-300 font-bold'
+                                  : isOos
                                   ? 'bg-red-600 text-white font-bold'
                                   : 'bg-slate-100 text-slate-700'
                               }`}
@@ -1318,7 +1488,7 @@ export default function IngredientManager() {
                           type="button"
                           onClick={() => openModal(ing)}
                           className="p-2 text-slate-500 hover:text-indigo-600 rounded-lg hover:bg-slate-100"
-                          title="Edit Ingredient"
+                          title="Edit Ingredient or Link Backup"
                         >
                           <Edit3 className="w-4 h-4" />
                         </button>
@@ -1347,7 +1517,7 @@ export default function IngredientManager() {
             <div className="flex items-center justify-between pb-4 border-b border-slate-200">
               <h2 className="text-xl font-extrabold text-slate-900">
                 {editingId
-                  ? 'Edit Ingredient Specification'
+                  ? 'Edit Ingredient & Backup Substitute'
                   : 'Add New Ingredient'}
               </h2>
               <button
@@ -1403,7 +1573,7 @@ export default function IngredientManager() {
                   name="ingredientList"
                   rows={3}
                   required
-                  placeholder="Paste directly from spec sheet, e.g.: Sausage Rolls: Water, Wheat Flour, Pork (9%), Rusk (Wheat Flour), Glaze (Water, Wheat Protein)... May also contain Barley, Eggs, Milk, Mustard and Oats."
+                  placeholder="Paste directly from spec sheet..."
                   value={formData.ingredientList}
                   onChange={(e) => handleIngredientListChange(e.target.value)}
                   className="w-full px-3.5 py-2.5 rounded-xl border border-indigo-300 bg-white text-sm focus:ring-2 focus:ring-indigo-600"
@@ -1455,7 +1625,7 @@ export default function IngredientManager() {
                     type="text"
                     autoComplete="off"
                     required
-                    placeholder="e.g. Sausage Rolls"
+                    placeholder="e.g. Chicken Breast Fillet (120g)"
                     value={formData.productName}
                     onChange={(e) =>
                       setFormData({ ...formData, productName: e.target.value })
@@ -1574,6 +1744,37 @@ export default function IngredientManager() {
                     }
                     className="w-full px-3.5 py-2 rounded-xl border border-slate-300 text-sm"
                   />
+                </div>
+
+                {/* Global Backup / Substitute Ingredient Selector */}
+                <div className="sm:col-span-2">
+                  <label
+                    htmlFor="substitute-ingredient"
+                    className="block text-xs font-bold uppercase text-indigo-700 mb-1 flex items-center gap-1.5"
+                  >
+                    <ArrowLeftRight className="w-3.5 h-3.5" />
+                    Backup / Substitute Ingredient (Auto-Swaps Across Dishes When OOS)
+                  </label>
+                  <select
+                    id="substitute-ingredient"
+                    name="substituteId"
+                    value={formData.substituteId}
+                    onChange={(e) =>
+                      setFormData({ ...formData, substituteId: e.target.value })
+                    }
+                    className="w-full px-3.5 py-2 rounded-xl border-2 border-indigo-200 bg-indigo-50/40 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-indigo-600"
+                  >
+                    <option value="">
+                      -- None (Mark dishes Sold Out if this item is Out of Stock) --
+                    </option>
+                    {ingredients
+                      .filter((i) => i.id !== editingId)
+                      .map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {i.productName} ({i.supplier} • {i.supplierCode})
+                        </option>
+                      ))}
+                  </select>
                 </div>
               </div>
 
