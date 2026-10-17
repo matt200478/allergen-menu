@@ -13,6 +13,8 @@ import {
   UK_ALLERGENS,
   GLUTEN_CEREALS,
   formatPPDSString,
+  suggestCustomerFriendlyName,
+  getCustomerFacingIngredientName,
 } from './DishBuilder';
 import {
   Plus,
@@ -46,61 +48,6 @@ const createDefaultAllergens = () => {
     map[c.key] = 'No';
   });
   return map;
-};
-
-/**
- * Automatically strips common catering wholesaler brands and pack weights
- * so "Chef's Larder Mini Sausage Rolls (85g)" becomes "Mini Sausage Rolls" for the Kiosk.
- */
-const WHOLESALE_BRAND_PREFIXES = [
-  "chef's larder",
-  "chefs larder",
-  "chef’s larder",
-  "brakes",
-  "bidfood",
-  "booker",
-  "country range",
-  "everyday favourites",
-  "everyday value",
-  "sysco",
-  "jj foodservice",
-  "farmfoods",
-  "mccain",
-  "lamb weston",
-  "aviko",
-  "heinz",
-  "hellmann's",
-  "hellmanns",
-];
-
-export const suggestCustomerFriendlyName = (rawKitchenName = '') => {
-  if (!rawKitchenName) return '';
-  let cleaned = rawKitchenName.trim();
-
-  // Strip leading wholesale brand names (case-insensitive)
-  WHOLESALE_BRAND_PREFIXES.forEach((brand) => {
-    const regex = new RegExp(`^${brand}\\s+[-–—:]?\\s*`, 'i');
-    cleaned = cleaned.replace(regex, '');
-  });
-
-  // Strip parenthesised pack weights or counts e.g. "(85g)", "(48 pack)", "(2.5kg)"
-  cleaned = cleaned.replace(
-    /\s*\(\s*\d+(\.\d+)?\s*(g|kg|ml|l|oz|pack|pk|pcs|slices|rolls)\s*\)/gi,
-    ''
-  );
-
-  return cleaned.trim() || rawKitchenName.trim();
-};
-
-/**
- * Returns the customer-safe display name for Kiosk & PPDS labels.
- */
-export const getCustomerFacingIngredientName = (ing) => {
-  if (!ing) return '';
-  if (ing.customerName && ing.customerName.trim() !== '') {
-    return ing.customerName.trim();
-  }
-  return suggestCustomerFriendlyName(ing.productName || '');
 };
 
 /**
@@ -204,10 +151,8 @@ export const recalculateDishPayload = (dish, ingredientMap) => {
 
     validComponents.push({ ing: effectiveIng, weight });
 
-    // Calories
     totalCalories += ((Number(effectiveIng.caloriesPer100g) || 0) / 100) * weight;
 
-    // 14 Major Allergens
     const ingAllergens = effectiveIng.allergens || {};
     UK_ALLERGENS.forEach(({ key }) => {
       const val = ingAllergens[key] || 'No';
@@ -217,7 +162,6 @@ export const recalculateDishPayload = (dish, ingredientMap) => {
       );
     });
 
-    // 4 Gluten Cereals
     GLUTEN_CEREALS.forEach(({ key }) => {
       const val = ingAllergens[key] || ingAllergens.cereals?.[key] || 'No';
       aggregatedAllergens[key] = mergeAllergenState(
@@ -233,7 +177,6 @@ export const recalculateDishPayload = (dish, ingredientMap) => {
     });
   });
 
-  // Preserve shared fryer / prep surface cross-contamination traces on the dish
   (dish.crossContamAllergens || []).forEach((key) => {
     aggregatedAllergens[key] = mergeAllergenState(
       aggregatedAllergens[key],
@@ -247,7 +190,6 @@ export const recalculateDishPayload = (dish, ingredientMap) => {
     }
   });
 
-  // Rebuild Natasha's Law (PPDS) string using the Customer-Friendly Kiosk Name (hiding supplier brands)
   const sortedForPpds = [...validComponents].sort((a, b) => b.weight - a.weight);
   let rawCompositeIngredients = sortedForPpds
     .map(({ ing }) => {
@@ -436,8 +378,8 @@ export const detectAllergensFromIngredientText = (rawText) => {
 const INITIAL_FORM_STATE = {
   supplier: '',
   supplierCode: '',
-  productName: '', // Internal Kitchen / Supplier Name (e.g. "Chef's Larder Mini Sausage Rolls")
-  customerName: '', // Public Kiosk / PPDS Name (e.g. "Mini Sausage Rolls")
+  productName: '',
+  customerName: '',
   caloriesPer100g: '',
   costPerPack: '',
   packWeightGrams: '',
@@ -548,7 +490,6 @@ export default function IngredientManager() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStock, setFilterStock] = useState('ALL');
 
-  // Modal / Form State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [formData, setFormData] = useState(INITIAL_FORM_STATE);
@@ -560,7 +501,6 @@ export default function IngredientManager() {
 
   const fileInputRef = useRef(null);
 
-  // 1. Subscribe to both Ingredients and Dishes
   useEffect(() => {
     const unsubIngredients = onSnapshot(collection(db, 'ingredients'), (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -588,7 +528,6 @@ export default function IngredientManager() {
     return map;
   }, [ingredients]);
 
-  // 2. Map Ingredient ID -> Array of Dishes that rely on it
   const dependencyMap = useMemo(() => {
     const map = {};
     dishes.forEach((dish) => {
@@ -621,7 +560,6 @@ export default function IngredientManager() {
     }).length;
   }, [ingredients]);
 
-  // 1-Click EHO Spec Verification Handler
   const handleVerifyIngredientSpec = async (ingredient) => {
     try {
       const batch = writeBatch(db);
@@ -650,7 +588,6 @@ export default function IngredientManager() {
     }
   };
 
-  // Handle typing into Kitchen / Supplier Product Name (auto-suggests clean Customer Name)
   const handleKitchenNameChange = (newKitchenName) => {
     setFormData((prev) => ({
       ...prev,
@@ -661,7 +598,6 @@ export default function IngredientManager() {
     }));
   };
 
-  // Handle typing or pasting into the Supplier Sub-Ingredients textarea
   const handleIngredientListChange = (newText) => {
     setFormData((prev) => {
       let updatedProductName = prev.productName;
@@ -759,7 +695,6 @@ export default function IngredientManager() {
     setIsModalOpen(true);
   };
 
-  // 3. Instant Stock / Backup Swap Toggle + Full Multi-Dish Allergen & PPDS Cascade
   const handleToggleStock = async (ingredient) => {
     const newStockState = !ingredient.inStock;
     const affectedDishes = dependencyMap[ingredient.id] || [];
@@ -825,7 +760,6 @@ export default function IngredientManager() {
     }
   };
 
-  // 4. Save New or Edited Ingredient + Cascade Customer Name & Allergens to Dependent Dishes
   const handleSaveIngredient = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -925,7 +859,6 @@ export default function IngredientManager() {
     }
   };
 
-  // 5. CSV Export (Includes customerName column)
   const handleExportCsv = () => {
     if (ingredients.length === 0) {
       setFeedback({
@@ -974,7 +907,6 @@ export default function IngredientManager() {
     });
   };
 
-  // 6. Download Blank CSV Template
   const handleDownloadCsvTemplate = () => {
     const sampleRow = [
       'Booker',
@@ -1003,7 +935,6 @@ export default function IngredientManager() {
     URL.revokeObjectURL(url);
   };
 
-  // 7. CSV Bulk Import (Supports optional customerName column or auto-generates it)
   const handleImportCsvFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1165,7 +1096,6 @@ export default function IngredientManager() {
     }
   };
 
-  // Filtered Ingredients list
   const filteredIngredients = useMemo(() => {
     return ingredients.filter((ing) => {
       const q = searchQuery.toLowerCase();
@@ -1400,7 +1330,6 @@ export default function IngredientManager() {
                         : 'hover:bg-slate-50'
                     }
                   >
-                    {/* Stock / Swap Toggle Button */}
                     <td className="py-3.5 px-4">
                       <button
                         type="button"
@@ -1432,16 +1361,16 @@ export default function IngredientManager() {
                       </button>
                     </td>
 
-                    {/* Kitchen Name, Customer Kiosk Name & Linked Backup */}
                     <td className="py-3.5 px-4 space-y-1">
                       <div className="font-bold text-slate-900">
                         {ing.productName}
                       </div>
 
-                      {/* Customer-Friendly Kiosk Name Badge */}
                       <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-semibold">
                         <Eye className="w-3 h-3 text-emerald-600 shrink-0" />
-                        <span>Kiosk Name: <strong>{publicKioskName}</strong></span>
+                        <span>
+                          Kiosk Name: <strong>{publicKioskName}</strong>
+                        </span>
                       </div>
 
                       <div className="text-xs text-slate-500">
@@ -1467,7 +1396,6 @@ export default function IngredientManager() {
                       )}
                     </td>
 
-                    {/* Cost & Pack Size */}
                     <td className="py-3.5 px-4">
                       <div className="font-bold text-slate-800">
                         £{Number(ing.costPerPack).toFixed(2)}
@@ -1477,7 +1405,6 @@ export default function IngredientManager() {
                       </div>
                     </td>
 
-                    {/* EHO 90-Day Traffic Light */}
                     <td className="py-3.5 px-4">
                       <div className="flex flex-col items-start gap-1">
                         <span
@@ -1521,7 +1448,6 @@ export default function IngredientManager() {
                       </div>
                     </td>
 
-                    {/* Allergen Badges */}
                     <td className="py-3.5 px-4">
                       <div className="flex flex-wrap gap-1 max-w-xs">
                         {activeAllergens.length === 0 ? (
@@ -1546,7 +1472,6 @@ export default function IngredientManager() {
                       </div>
                     </td>
 
-                    {/* Dependent Dishes */}
                     <td className="py-3.5 px-4">
                       {dependentDishes.length === 0 ? (
                         <span className="text-xs text-slate-400">Unused</span>
@@ -1570,7 +1495,6 @@ export default function IngredientManager() {
                       )}
                     </td>
 
-                    {/* Actions */}
                     <td className="py-3.5 px-4 text-right">
                       <div className="inline-flex items-center gap-1">
                         <button
@@ -1866,7 +1790,6 @@ export default function IngredientManager() {
                   />
                 </div>
 
-                {/* Global Backup / Substitute Ingredient Selector */}
                 <div className="sm:col-span-3">
                   <label
                     htmlFor="substitute-ingredient"
