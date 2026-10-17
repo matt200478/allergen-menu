@@ -8,7 +8,6 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db, auth } from '../../firebase/config';
-import { getCustomerFacingIngredientName } from './IngredientManager';
 import {
   Plus,
   Trash2,
@@ -96,6 +95,53 @@ export const DIETARY_BADGES = [
     pillClass: 'bg-teal-100 text-teal-900 border-teal-300',
   },
 ];
+
+// Wholesaler brand prefixes stripped automatically for Customer-Friendly Kiosk Names
+const WHOLESALE_BRAND_PREFIXES = [
+  "chef's larder",
+  'chefs larder',
+  'chef’s larder',
+  'brakes',
+  'bidfood',
+  'booker',
+  'country range',
+  'everyday favourites',
+  'everyday value',
+  'sysco',
+  'jj foodservice',
+  'farmfoods',
+  'mccain',
+  'lamb weston',
+  'aviko',
+  'heinz',
+  "hellmann's",
+  'hellmanns',
+];
+
+export const suggestCustomerFriendlyName = (rawKitchenName = '') => {
+  if (!rawKitchenName) return '';
+  let cleaned = rawKitchenName.trim();
+
+  WHOLESALE_BRAND_PREFIXES.forEach((brand) => {
+    const regex = new RegExp(`^${brand}\\s+[-–—:]?\\s*`, 'i');
+    cleaned = cleaned.replace(regex, '');
+  });
+
+  cleaned = cleaned.replace(
+    /\s*\(\s*\d+(\.\d+)?\s*(g|kg|ml|l|oz|pack|pk|pcs|slices|rolls)\s*\)/gi,
+    ''
+  );
+
+  return cleaned.trim() || rawKitchenName.trim();
+};
+
+export const getCustomerFacingIngredientName = (ing) => {
+  if (!ing) return '';
+  if (ing.customerName && ing.customerName.trim() !== '') {
+    return ing.customerName.trim();
+  }
+  return suggestCustomerFriendlyName(ing.productName || '');
+};
 
 // Comprehensive keyword list for Natasha's Law (PPDS) automatic bolding & capitalisation
 const ALLERGEN_KEYWORDS = [
@@ -384,7 +430,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   const [ingredients, setIngredients] = useState([]);
   const [loadingIngredients, setLoadingIngredients] = useState(true);
 
-  // Dish Form State
   const [dishName, setDishName] = useState(existingDish?.name || '');
   const [category, setCategory] = useState(existingDish?.category || CATEGORIES[0]);
   const [photoUrl, setPhotoUrl] = useState(existingDish?.photoUrl || '');
@@ -393,10 +438,8 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   const [retailPrice, setRetailPrice] = useState(existingDish?.retailPrice || '');
   const [isActive, setIsActive] = useState(existingDish?.isActive ?? true);
 
-  // Dietary & Lifestyle Badges State ('V', 'VE', 'GF', 'DF', 'HALAL')
   const [dietaryTags, setDietaryTags] = useState(existingDish?.dietaryTags || []);
 
-  // Recipe Components State
   const [components, setComponents] = useState(
     existingDish?.components?.map((c) => ({
       ingredientId: c.ingredientId || '',
@@ -406,12 +449,10 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     })) || [{ ingredientId: '', qty: '', unitWeightGrams: '', weightGrams: '' }]
   );
 
-  // Kitchen Cross-Contamination (e.g. Shared Fryer / Grill traces)
   const [crossContamAllergens, setCrossContamAllergens] = useState(
     existingDish?.crossContamAllergens || []
   );
 
-  // UI & Accounting Helpers
   const [includeVatInGp, setIncludeVatInGp] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null);
@@ -419,7 +460,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
 
   const photoInputRef = useRef(null);
 
-  // 1. Real-time Subscription to Ingredients Collection
   useEffect(() => {
     const unsubscribe = onSnapshot(
       collection(db, 'ingredients'),
@@ -449,7 +489,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     return map;
   }, [ingredients]);
 
-  // Handle Photo File Selection & Compression
   const handlePhotoFileChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -532,7 +571,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     );
   };
 
-  // 2. CORE ENGINE: Calories, Cost, GP%, OOS Dependencies, Allergens & Natasha's Law
+  // CORE ENGINE: Calories, Cost, GP%, OOS Dependencies, Allergens & Natasha's Law
   const metrics = useMemo(() => {
     let totalCalories = 0;
     let totalCost = 0;
@@ -622,7 +661,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
         ? ((effectiveRevenue - totalCost) / effectiveRevenue) * 100
         : 0;
 
-    // Natasha's Law (PPDS) Composite String using Customer-Friendly Name (hiding Chef's Larder / Brakes etc.)
     const sortedForPpds = [...validComponents].sort(
       (a, b) => b.weight - a.weight
     );
@@ -647,7 +685,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
 
     const ppdsFormatted = formatPPDSString(rawCompositeIngredients);
 
-    // Smart Dietary Badge Conflict Guard
     const dietaryConflicts = [];
     if (dietaryTags.includes('GF') && aggregatedAllergens.gluten !== 'No') {
       dietaryConflicts.push(
@@ -710,7 +747,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     setTimeout(() => setCopiedPpds(false), 2000);
   };
 
-  // 3. Save Dish & Write Audit Log via Atomic Firestore Batch
   const handleSaveDish = async (e) => {
     e.preventDefault();
     setStatusMessage(null);
@@ -818,7 +854,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
           </p>
         </div>
 
-        {/* Active Status Toggle */}
         <label
           htmlFor="dish-active-toggle"
           className="inline-flex items-center gap-3 cursor-pointer bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-sm"
