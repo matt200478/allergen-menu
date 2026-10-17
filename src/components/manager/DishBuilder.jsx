@@ -8,6 +8,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db, auth } from '../../firebase/config';
+import { getCustomerFacingIngredientName } from './IngredientManager';
 import {
   Plus,
   Trash2,
@@ -29,6 +30,7 @@ import {
   ChevronDown,
   UtensilsCrossed,
   Leaf,
+  Eye,
 } from 'lucide-react';
 
 // UK 14 Major Allergens Configuration
@@ -223,6 +225,7 @@ function SearchableIngredientSelect({
       const matchesQuery =
         !q ||
         ing.productName?.toLowerCase().includes(q) ||
+        ing.customerName?.toLowerCase().includes(q) ||
         ing.supplierCode?.toLowerCase().includes(q) ||
         ing.supplier?.toLowerCase().includes(q);
       return matchesSupplier && matchesQuery;
@@ -249,15 +252,13 @@ function SearchableIngredientSelect({
               )}
               {selectedIngredient.productName}
             </span>
-            <span className="text-xs text-slate-500 ml-1.5">
-              ({selectedIngredient.supplier} • £
-              {Number(selectedIngredient.costPerPack).toFixed(2)} /{' '}
-              {selectedIngredient.packWeightGrams}g)
+            <span className="text-xs text-emerald-700 font-semibold ml-1.5">
+              [Kiosk: {getCustomerFacingIngredientName(selectedIngredient)}]
             </span>
           </div>
         ) : (
           <span className="text-slate-400 font-medium">
-            Search or select ingredient...
+            Search kitchen name, kiosk name, or supplier code...
           </span>
         )}
         <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
@@ -274,7 +275,7 @@ function SearchableIngredientSelect({
                 name={`ingredientSearchInput_${rowIndex}`}
                 type="text"
                 autoComplete="off"
-                placeholder="Type name, supplier, or code (e.g. Brioche, BRK)..."
+                placeholder="Type kitchen name, kiosk name, or code (e.g. Chef's Larder, Sausage Roll)..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-9 pr-8 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-600"
@@ -322,6 +323,7 @@ function SearchableIngredientSelect({
                   ((Number(ing.costPerPack) || 0) /
                     (Number(ing.packWeightGrams) || 1)) *
                   100;
+                const publicName = getCustomerFacingIngredientName(ing);
 
                 return (
                   <button
@@ -348,8 +350,10 @@ function SearchableIngredientSelect({
                         <span>{ing.productName}</span>
                       </div>
                       <div className="text-[11px] text-slate-500 truncate">
-                        {ing.supplier} • Code:{' '}
-                        <span className="font-mono">{ing.supplierCode}</span> •{' '}
+                        <span className="text-emerald-700 font-semibold">
+                          Kiosk: {publicName}
+                        </span>{' '}
+                        • {ing.supplier} ({ing.supplierCode}) •{' '}
                         {ing.caloriesPer100g} kcal/100g
                       </div>
                     </div>
@@ -392,7 +396,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
   // Dietary & Lifestyle Badges State ('V', 'VE', 'GF', 'DF', 'HALAL')
   const [dietaryTags, setDietaryTags] = useState(existingDish?.dietaryTags || []);
 
-  // Recipe Components State (includes persistent qty and unitWeightGrams for Portion Multiplier)
+  // Recipe Components State
   const [components, setComponents] = useState(
     existingDish?.components?.map((c) => ({
       ingredientId: c.ingredientId || '',
@@ -477,7 +481,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     }
   };
 
-  // Toggle Dietary & Lifestyle Badge
   const toggleDietaryTag = (tagKey) => {
     setDietaryTags((prev) =>
       prev.includes(tagKey)
@@ -486,7 +489,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     );
   };
 
-  // Component Row Handlers (including automatic Qty × Unit Weight multiplication)
   const handleAddComponent = () => {
     setComponents((prev) => [
       ...prev,
@@ -505,7 +507,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
 
         const updated = { ...comp, [field]: rawValue };
 
-        // If manager edits Qty or Unit (g), automatically calculate Total Weight (g)
         if (field === 'qty' || field === 'unitWeightGrams') {
           const q = parseFloat(field === 'qty' ? rawValue : comp.qty);
           const u = parseFloat(
@@ -516,7 +517,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
           }
         }
 
-        // If manager edits Total Weight directly, clear Qty/Unit only if they don't match
         if (field === 'weightGrams') {
           updated.weightGrams = rawValue === '' ? '' : Number(rawValue);
         }
@@ -526,7 +526,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
     );
   };
 
-  // Toggle Shared Fryer / Prep Surface Cross-Contamination allergen
   const toggleCrossContamAllergen = (key) => {
     setCrossContamAllergens((prev) =>
       prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
@@ -623,14 +622,15 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
         ? ((effectiveRevenue - totalCost) / effectiveRevenue) * 100
         : 0;
 
+    // Natasha's Law (PPDS) Composite String using Customer-Friendly Name (hiding Chef's Larder / Brakes etc.)
     const sortedForPpds = [...validComponents].sort(
       (a, b) => b.weight - a.weight
     );
     let rawCompositeIngredients = sortedForPpds
-      .map(
-        ({ ing }) =>
-          `${ing.productName} (${ing.ingredientList || ing.productName})`
-      )
+      .map(({ ing }) => {
+        const publicName = getCustomerFacingIngredientName(ing);
+        return `${publicName} (${ing.ingredientList || publicName})`;
+      })
       .join(', ');
 
     if (crossContamAllergens.length > 0 && rawCompositeIngredients) {
@@ -814,7 +814,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
               : 'Dish Builder & Margin Calculator'}
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            Build recipes with Qty × Unit Weight calculation, dietary badges, live GP%, and Natasha&apos;s Law compliance.
+            Build recipes with Qty × Unit Weight calculation, dietary badges, live GP%, and brand-free customer PPDS labels.
           </p>
         </div>
 
@@ -1117,7 +1117,7 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                   2. Recipe Components &amp; Portion Multiplier
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Enter <strong>Qty × Unit (g)</strong> (e.g. 3 goujons × 45g) to auto-calculate total grams, or type directly into <strong>Total (g)</strong>.
+                  Kitchen staff see full supplier names here; customers only see the clean <strong>Kiosk Name</strong> on the menu.
                 </p>
               </div>
               <button
@@ -1160,7 +1160,6 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                           : 'bg-slate-50 border-slate-200'
                       }`}
                     >
-                      {/* Top Row: Searchable Ingredient Selector + Live Cost/kcal + Remove */}
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <div className="flex-1">
                           <div className="block text-[11px] font-bold uppercase text-slate-500 mb-1">
@@ -1331,10 +1330,10 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
                 <Printer className="w-5 h-5 text-indigo-600" />
                 <div>
                   <h2 className="text-lg font-bold text-slate-800">
-                    3. Natasha&apos;s Law (PPDS) Label Preview
+                    3. Natasha&apos;s Law (PPDS) &amp; Customer Kiosk Preview
                   </h2>
                   <p className="text-xs text-slate-500">
-                    Ordered by weight descending with automatic UPPERCASE and bold allergen formatting.
+                    Uses your clean <strong>Customer-Friendly Names</strong> (supplier brands hidden) ordered by weight descending.
                   </p>
                 </div>
               </div>
@@ -1360,9 +1359,12 @@ export default function DishBuilder({ existingDish = null, onSaveSuccess }) {
             </div>
 
             <div className="p-4 rounded-xl bg-amber-50/60 border border-amber-200 font-mono text-xs leading-relaxed text-slate-900">
-              <div className="font-bold uppercase text-slate-700 mb-1">
-                {dishName || 'Untitled Dish'} ({metrics.totalWeightGrams}g |{' '}
-                {metrics.totalCalories} kcal)
+              <div className="font-bold uppercase text-slate-700 mb-1 flex items-center gap-1.5">
+                <Eye className="w-3.5 h-3.5 text-emerald-700" />
+                <span>
+                  Customer Kiosk View: {dishName || 'Untitled Dish'} (
+                  {metrics.totalWeightGrams}g | {metrics.totalCalories} kcal)
+                </span>
               </div>
               {metrics.ppdsFormatted.html ? (
                 <p
